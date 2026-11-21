@@ -26,6 +26,9 @@ window.__ModuleLoader__.load({
       readOnly: '当前页面无权保存播报设置。', conflict: '播报设置已在别处更新。请放弃草稿，再从已保存的设置继续编辑。',
       saveFailed: '未能确认播报设置已保存。请检查连接或权限，再核对已保存的值。', saved: '播报设置已保存。',
       saveVoice: '保存播报设置', discard: '放弃草稿',
+      balance: 'Fish 余额', balanceRefresh: '点击刷新 Fish Audio API 余额',
+      balanceUnavailable: '查询失败', balanceUnauthorized: '请检查 API Key',
+      freeAvailable: '免费额度可用', freeExhausted: '免费额度已用完', freeUnknown: '免费额度状态未知',
     }
     const en = {
       summary: 'Configure the Fish Audio key, reference voice, and playback mode.',
@@ -47,6 +50,9 @@ window.__ModuleLoader__.load({
       readOnly: 'This page cannot save playback settings.', conflict: 'Settings changed elsewhere. Discard this draft, then edit the saved settings again.',
       saveFailed: 'Could not confirm the save. Check the connection or permissions, then review the saved values.', saved: 'Playback settings saved.',
       saveVoice: 'Save playback settings', discard: 'Discard draft',
+      balance: 'Fish balance', balanceRefresh: 'Click to refresh Fish Audio API balance',
+      balanceUnavailable: 'Unavailable', balanceUnauthorized: 'Check API key',
+      freeAvailable: 'Free credit available', freeExhausted: 'Free credit exhausted', freeUnknown: 'Free credit status unknown',
     }
     const css = `
       .phoebe-config { display:grid; gap:16px; max-width:720px; min-width:0; color:var(--dsw-alias-label-primary); }
@@ -231,6 +237,67 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const balanceCss = `
+      .phoebe-balance { box-sizing:border-box; display:inline-flex; align-items:center; min-width:0; max-width:100%; margin-inline-start:auto; }
+      .phoebe-balance__button { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        border:1px solid var(--dsw-alias-border-l1); border-radius:999px; padding:0 7px; background:var(--dsw-alias-bg-layer-1);
+        color:var(--dsw-alias-label-secondary); cursor:pointer; font:inherit; font-size:11px; line-height:20px; font-variant-numeric:tabular-nums; }
+      .phoebe-balance__button:hover { color:var(--dsw-alias-label-primary); }
+      .phoebe-balance__button:focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
+      .phoebe-balance__button[aria-busy=true] { opacity:.65; }
+    `
+
+    function BalanceBadge({ t }) {
+      const [balance, setBalance] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const refresh = useRef(null)
+      useEffect(() => {
+        const lifetime = new AbortController()
+        let pending = false
+        let lastStarted = -Infinity
+        const load = async () => {
+          if (pending || lifetime.signal.aborted) return
+          pending = true
+          lastStarted = Date.now()
+          setBusy(true)
+          try {
+            // Same authenticated, base-relative API URL as DSH's native Fetch routes.
+            const response = await fetch('api/phoebe-voice.balance', { signal: lifetime.signal, cache: 'no-store' })
+            const result = response.ok ? await response.json() : null
+            if (!lifetime.signal.aborted) setBalance(result)
+          } catch {
+            if (!lifetime.signal.aborted) setBalance(previous => previous ? { status: 'unavailable' } : null)
+          } finally {
+            pending = false
+            if (!lifetime.signal.aborted) setBusy(false)
+          }
+        }
+        const refreshVisible = () => {
+          if (!document.hidden && Date.now() - lastStarted >= 120_000) void load()
+        }
+        refresh.current = load
+        refreshVisible()
+        const timer = setInterval(refreshVisible, 120_000)
+        document.addEventListener('visibilitychange', refreshVisible)
+        return () => {
+          lifetime.abort()
+          clearInterval(timer)
+          document.removeEventListener('visibilitychange', refreshVisible)
+          refresh.current = null
+        }
+      }, [])
+
+      if (!['ok', 'unavailable', 'unauthorized'].includes(balance?.status)) return null
+      const detail = balance.status === 'ok'
+        ? [balance.credit, t(balance.hasFreeCredit === true ? 'freeAvailable' : balance.hasFreeCredit === false ? 'freeExhausted' : 'freeUnknown')].join(' · ')
+        : t(balance.status === 'unauthorized' ? 'balanceUnauthorized' : 'balanceUnavailable')
+      const label = t('balance') + ' · ' + detail
+      const title = label + ' — ' + t('balanceRefresh')
+      return h('span', { className: 'phoebe-balance' }, h('style', null, balanceCss),
+        h('button', { type: 'button', className: 'phoebe-balance__button', 'aria-busy': busy, title,
+          'aria-label': title, onClick: () => { void refresh.current?.() } }, label))
+    }
+
     function Page(props) {
       if (props.view === 'summary') return props.t('summary')
       return h('div', { className: 'phoebe-config' }, h('style', null, css), h(KeyForm, props), h(PlaybackForm, props))
@@ -249,6 +316,9 @@ window.__ModuleLoader__.load({
           },
           async set(key) { return (await ctx.remote.credentials.set(KEY, key)).ok },
         }
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock', id: 'phoebe-voice.balance', order: 50, locale: NS,
+        }, BalanceBadge))
         ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
           name: 'plugins.row.config', key: '@local/dsh-phoebe-voice#phoebe-voice', locale: NS,
           inject: () => ({ credentials }),

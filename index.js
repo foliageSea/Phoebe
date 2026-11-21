@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path'
 import z from '@deepseek-ai/schemastery'
+import { registerBalanceRoute } from './balance.js'
 import { installHooks, isWithinWorkspace } from './hooks.js'
 import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish } from './playback.js'
 
@@ -60,5 +61,6 @@ export function apply(ctx, config) {
   }
   ctx.on('settings/document-updated', syncMode)
   ctx.on('app-boot/config-reload', syncMode)
+  ctx.inject(['connection'], (webCtx) => registerBalanceRoute(webCtx))
   installHooks(ctx, { workspaceRoot: config.workspaceRoot, get mode() { return config.mode.get() } }, playback, warn)
 }
