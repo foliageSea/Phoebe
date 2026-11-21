@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { win32 } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { isFullPath } from './paths.js'
 
 const FISH_TTS = 'https://api.fish.audio/v1/tts'
 export const PHOEBE_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
@@ -18,13 +19,28 @@ export class PlaybackError extends Error {
   }
 }
 
-export function findPlayer(explicitPath) {
-  for (const path of explicitPath ? [explicitPath] : PLAYER_CANDIDATES) {
-    try {
-      accessSync(path, constants.X_OK)
-      if (statSync(path).isFile()) return path
-    } catch { /* probe the next fixed path */ }
+function isExecutableFile(path) {
+  try {
+    accessSync(path, constants.X_OK)
+    return statSync(path).isFile()
+  } catch {
+    return false
   }
+}
+
+function windowsPlayers(env) {
+  const key = Object.keys(env).find(key => key.toUpperCase() === 'PATH')
+  if (!key) return []
+  return env[key].split(';')
+    .map(entry => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(entry => isFullPath(entry, 'win32'))
+    .map(entry => win32.join(entry, 'ffplay.exe'))
+}
+
+export function findPlayer(explicitPath, { platform = process.platform, env = process.env, probe = isExecutableFile } = {}) {
+  const candidates = explicitPath !== undefined ? [explicitPath]
+    : platform === 'win32' ? windowsPlayers(env) : PLAYER_CANDIDATES
+  return candidates.find(path => isFullPath(path, platform) && probe(path))
 }
 
 // Priority mailbox: one active job, one pending job of each kind. No playback or
@@ -143,10 +159,17 @@ export async function withFishAudio({ key, text, model, referenceId = PHOEBE_VOI
 
 function launchPlayer(player, input, stdin, signal, startPlayer) {
   signal.throwIfAborted()
+  const env = { LANG: 'en_US.UTF-8' }
+  if (process.platform === 'win32') {
+    // Keep Windows runtime variables available without inheriting credentials.
+    for (const key of ['SystemRoot', 'WINDIR']) {
+      if (process.env[key]) env[key] = process.env[key]
+    }
+  }
   const child = startPlayer(player, [
     '-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-f', 'mp3',
     '-probesize', '1024', '-analyzeduration', '100000', '-volume', '70', '-i', input,
-  ], { shell: false, stdio: [stdin, 'ignore', 'ignore'], env: { LANG: 'en_US.UTF-8' }, windowsHide: true })
+  ], { shell: false, stdio: [stdin, 'ignore', 'ignore'], env, windowsHide: true })
   const exited = new Promise((resolve, reject) => {
     let failed = false
     child.once('error', () => { failed = true })
@@ -165,7 +188,7 @@ function launchPlayer(player, input, stdin, signal, startPlayer) {
 
 export async function playLocal({ player, path, signal }, { startPlayer = spawn } = {}) {
   signal.throwIfAborted()
-  if (typeof path !== 'string' || !isAbsolute(path)) throw new PlaybackError('invalid-audio')
+  if (!isFullPath(path)) throw new PlaybackError('invalid-audio')
   const { exited, detach } = launchPlayer(player, path, 'ignore', signal, startPlayer)
   try {
     await exited

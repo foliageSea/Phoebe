@@ -47,9 +47,11 @@ const questions = [{ id: 'color', question: '你更喜欢蓝色还是绿色？' 
 
 // Config validation is exercised through the same Standard Schema entry Cordis uses.
 const parse = (config) => Config['~standard'].validate(config)
-test('configuration is silent by default, validates IDs, and requires an absolute workspace to start enabled', () => {
+test('configuration defaults to silence and all workspaces; explicit paths must be absolute', () => {
   const defaults = parse({}).value
   assert.equal(defaults.mode.get(), 'off')
+  assert.equal(defaults.workspaceRoot, '/')
+  assert.doesNotThrow(() => apply({ on() {}, inject() {}, effect() {} }, parse({ mode: 'notice' }).value))
   assert.equal(defaults.reference_id.get(), PHOEBE_VOICE)
   assert.equal(parse({ reference_id: 'another_voice-42' }).value.reference_id.get(), 'another_voice-42')
   assert.ok(parse({ reference_id: 'https://fish.audio/m/abc' }).issues.length)
@@ -164,7 +166,9 @@ test('replays, tool-only or empty final steps, compacted messages and aborted tu
   assert.equal(h.queued.length, 0)
 })
 
-test('filesystem root scope queues fixed notices in separate workspaces', async () => {
+test('all-workspaces scope queues fixed notices in separate workspaces and rejects non-directories', async () => {
+  assert.equal(isWithinWorkspace('/', '.'), false)
+  assert.equal(isWithinWorkspace('/', join(process.cwd(), 'package.json')), false)
   for (const cwd of [process.cwd(), tmpdir()]) {
     const h = fakeHost({ cwd, mode: 'notice', workspaceRoot: '/' })
     await h.ask({ questions }, async () => 'unchanged')
@@ -183,7 +187,7 @@ test('working directory, delegated Agent and live identity restrict questions an
   const nested = join(root, 'work')
   const sibling = join(dir, 'PhoebeOther')
   await mkdir(nested, { recursive: true }); await mkdir(sibling)
-  await symlink(sibling, join(root, 'escape'), 'dir')
+  await symlink(sibling, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
   assert.equal(isWithinWorkspace(root, nested), true)
   assert.equal(isWithinWorkspace(root, sibling), false)
   assert.equal(isWithinWorkspace(root, join(root, 'escape')), false)

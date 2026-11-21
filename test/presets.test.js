@@ -185,8 +185,15 @@ test('local playback passes an absolute filename as a single argument without a 
       assert.equal(file, '/bin/ffplay')
       assert.deepEqual(args.slice(-2), ['-i', path])
       assert.equal(options.shell, false)
+      assert.equal(options.windowsHide, true)
       assert.deepEqual(options.stdio, ['ignore', 'ignore', 'ignore'])
-      assert.equal(options.env.FISH_API_KEY, undefined)
+      const expectedEnv = { LANG: 'en_US.UTF-8' }
+      if (process.platform === 'win32') {
+        for (const key of ['SystemRoot', 'WINDIR']) {
+          if (process.env[key]) expectedEnv[key] = process.env[key]
+        }
+      }
+      assert.deepEqual(options.env, expectedEnv)
       return child
     },
   })

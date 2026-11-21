@@ -1,13 +1,19 @@
 import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, relative, sep } from 'node:path'
+import { isFullPath } from './paths.js'
 import { finalSpeech, questionSpeech } from './speech.js'
 
+// Keep existing configurations using "/" and make them span all drives on Windows.
+export const ALL_WORKSPACES = '/'
+
 export function isWithinWorkspace(root, cwd) {
-  if (typeof cwd !== 'string' || !isAbsolute(cwd)) return false
+  if (!isFullPath(cwd) || (root !== ALL_WORKSPACES && !isFullPath(root))) return false
   try {
-    const rootPath = realpathSync.native(root)
     const cwdPath = realpathSync.native(cwd)
-    if (!statSync(rootPath).isDirectory() || !statSync(cwdPath).isDirectory()) return false
+    if (!statSync(cwdPath).isDirectory()) return false
+    if (root === ALL_WORKSPACES) return true
+    const rootPath = realpathSync.native(root)
+    if (!statSync(rootPath).isDirectory()) return false
     const path = relative(rootPath, cwdPath)
     return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
   } catch {

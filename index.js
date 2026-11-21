@@ -1,8 +1,9 @@
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { registerBalanceRoute } from './host/balance.js'
-import { installHooks, isWithinWorkspace } from './host/hooks.js'
+import { ALL_WORKSPACES, installHooks, isWithinWorkspace } from './host/hooks.js'
+import { isFullPath } from './host/paths.js'
 import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './host/playback.js'
 import { createPresets, registerPresetRoute } from './host/preset-route.js'
 import { NOTICES } from './host/speech.js'
@@ -12,17 +13,17 @@ export const inject = ['agents', 'credentials', 'workingDirectory']
 export const Config = z.object({
   mode: z.union(['off', 'notice', 'brief']).default('off').volatile(),
   reference_id: z.string().pattern(/^[A-Za-z0-9_-]{1,128}$/).default(PHOEBE_VOICE).volatile(),
-  workspaceRoot: z.string(),
+  workspaceRoot: z.string().default(ALL_WORKSPACES),
   fishModel: z.union(['s2.1-pro-free', 's2.1-pro']).default('s2.1-pro-free'),
   playerPath: z.string(),
 })
 
 export function apply(ctx, config) {
   let mode = config.mode.get()
-  if (mode !== 'off' && !isWithinWorkspace(config.workspaceRoot, config.workspaceRoot)) {
+  if (mode !== 'off' && config.workspaceRoot !== ALL_WORKSPACES && !isWithinWorkspace(config.workspaceRoot, config.workspaceRoot)) {
     throw new Error('phoebe-voice: workspaceRoot must be an existing absolute directory when enabled')
   }
-  if (config.playerPath !== undefined && !isAbsolute(config.playerPath)) {
+  if (config.playerPath !== undefined && !isFullPath(config.playerPath)) {
     throw new Error('phoebe-voice: playerPath must be an absolute executable path')
   }
 
