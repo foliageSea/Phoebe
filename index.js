@@ -1,8 +1,11 @@
-import { isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { registerBalanceRoute } from './balance.js'
 import { installHooks, isWithinWorkspace } from './hooks.js'
-import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish } from './playback.js'
+import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './playback.js'
+import { createPresets, registerPresetRoute } from './preset-route.js'
+import { NOTICES } from './speech.js'
 
 export const name = 'phoebe-voice'
 export const inject = ['agents', 'credentials', 'workingDirectory']
@@ -23,6 +26,13 @@ export function apply(ctx, config) {
     throw new Error('phoebe-voice: playerPath must be an absolute executable path')
   }
 
+  const resolveKey = async () => (await ctx.credentials.resolve('FISH_API_KEY'))?.value
+  const getVoice = () => config.reference_id.get()
+  const presets = createPresets({
+    resolveKey, getVoice, model: config.fishModel,
+    directory: join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'cache', 'phoebe-voice'),
+  })
+  const fixedScripts = new Set(Object.values(NOTICES))
   let lastWarning = ''
   let lastWarningAt = 0
   const warn = (error) => {
@@ -33,6 +43,7 @@ export function apply(ctx, config) {
     lastWarningAt = now
     const hint = {
       'missing-key': 'Configure FISH_API_KEY in the host credential store.',
+      'missing-preset': 'Prepare fixed audio in the Phoebe voice settings first.',
       'missing-player': 'Install ffplay or configure its absolute playerPath.',
       'http-401': 'Check the Fish Audio API key.',
       'http-402': 'Check Fish Audio billing or choose s2.1-pro-free.',
@@ -45,7 +56,15 @@ export function apply(ctx, config) {
   const playback = createPlayback(async (job, signal) => {
     const player = findPlayer(config.playerPath)
     if (!player) throw new PlaybackError('missing-player')
-    const key = (await ctx.credentials.resolve('FISH_API_KEY'))?.value?.trim()
+    if (fixedScripts.has(job.text)) {
+      const path = await presets.find(job.text)
+      signal.throwIfAborted()
+      if (!job.isCurrent()) return
+      if (!path) throw new PlaybackError('missing-preset')
+      await playLocal({ player, path, signal })
+      return
+    }
+    const key = (await resolveKey())?.trim()
     signal.throwIfAborted()
     if (!key) throw new PlaybackError('missing-key')
     if (!job.isCurrent()) return
@@ -61,6 +80,9 @@ export function apply(ctx, config) {
   }
   ctx.on('settings/document-updated', syncMode)
   ctx.on('app-boot/config-reload', syncMode)
-  ctx.inject(['connection'], (webCtx) => registerBalanceRoute(webCtx))
+  ctx.inject(['connection'], (webCtx) => {
+    registerBalanceRoute(webCtx)
+    registerPresetRoute(webCtx, presets)
+  })
   installHooks(ctx, { workspaceRoot: config.workspaceRoot, get mode() { return config.mode.get() } }, playback, warn)
 }

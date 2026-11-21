@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 const FISH_TTS = 'https://api.fish.audio/v1/tts'
 export const PHOEBE_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
-const MAX_AUDIO_BYTES = 1_000_000
+export const MAX_AUDIO_BYTES = 1_000_000
 const MAX_WAIT_MS = { ask: 12_000, final: 20_000 }
 const PLAY_TIMEOUT_MS = 30_000
 const PLAYER_CANDIDATES = ['/opt/homebrew/bin/ffplay', '/usr/local/bin/ffplay', '/usr/bin/ffplay']
@@ -113,52 +114,83 @@ async function* boundedAudio(body) {
   if (!bytes) throw new PlaybackError('empty-audio')
 }
 
-export async function playFish({ key, player, text, model, referenceId = PHOEBE_VOICE, signal }, { fetchAudio = fetch, startPlayer = spawn } = {}) {
-  const playing = new AbortController()
-  const stopSignal = AbortSignal.any([signal, playing.signal])
-  stopSignal.throwIfAborted()
-  const response = await fetchAudio(FISH_TTS, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', model },
-    body: JSON.stringify({ text, reference_id: referenceId, format: 'mp3', latency: 'balanced' }),
-    redirect: 'error',
-    signal: stopSignal,
-  })
-  let child
-  let pump
-  let exited
-  const stop = () => {
-    if (child?.pid != null && child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
-  }
+export async function withFishAudio({ key, text, model, referenceId = PHOEBE_VOICE, signal }, consume, { fetchAudio = fetch } = {}) {
+  const receiving = new AbortController()
+  const receiveSignal = AbortSignal.any([signal, receiving.signal])
+  let body
   try {
-    stopSignal.throwIfAborted()
+    receiveSignal.throwIfAborted()
+    const response = await fetchAudio(FISH_TTS, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', model },
+      body: JSON.stringify({ text, reference_id: referenceId, format: 'mp3', latency: 'balanced' }),
+      redirect: 'error',
+      signal: receiveSignal,
+    })
+    body = response.body
+    receiveSignal.throwIfAborted()
     if (!response.ok) throw new PlaybackError(`http-${response.status}`)
-    if (!response.body || !/^(?:audio\/[^;]+|application\/octet-stream)(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
+    if (!body || !/^(?:audio\/[^;]+|application\/octet-stream)(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
       throw new PlaybackError('invalid-audio')
     }
-    child = startPlayer(player, [
-      '-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-f', 'mp3',
-      '-probesize', '1024', '-analyzeduration', '100000', '-volume', '70', '-i', 'pipe:0',
-    ], { shell: false, stdio: ['pipe', 'ignore', 'ignore'], env: { LANG: 'en_US.UTF-8' }, windowsHide: true })
-    exited = new Promise((resolve, reject) => {
-      let failed = false
-      child.once('error', () => { failed = true })
-      child.once('close', (status) => {
-        if (!failed && status === 0) resolve()
-        else reject(new PlaybackError('player-failed'))
-      })
-    })
-    stopSignal.addEventListener('abort', stop, { once: true })
-    if (stopSignal.aborted) stop()
-    if (!child.stdin) throw new PlaybackError('player-failed')
-    pump = pipeline(Readable.from(boundedAudio(response.body), { objectMode: false }), child.stdin, { signal: stopSignal })
-    await Promise.all([pump, exited])
+    const pipeAudio = (output) => pipeline(Readable.fromWeb(body), boundedAudio, output, { signal: receiveSignal })
+    return await consume(pipeAudio)
   } finally {
-    stopSignal.removeEventListener('abort', stop)
-    // Abort the upstream connection before awaiting stream teardown (a read may be parked at EOF).
-    playing.abort()
-    stop()
-    await Promise.allSettled([pump, exited])
-    if (response.body && !response.body.locked) await response.body.cancel().catch(() => {})
+    receiving.abort()
+    if (body && !body.locked) void body.cancel().catch(() => {})
   }
+}
+
+function launchPlayer(player, input, stdin, signal, startPlayer) {
+  signal.throwIfAborted()
+  const child = startPlayer(player, [
+    '-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-f', 'mp3',
+    '-probesize', '1024', '-analyzeduration', '100000', '-volume', '70', '-i', input,
+  ], { shell: false, stdio: [stdin, 'ignore', 'ignore'], env: { LANG: 'en_US.UTF-8' }, windowsHide: true })
+  const exited = new Promise((resolve, reject) => {
+    let failed = false
+    child.once('error', () => { failed = true })
+    child.once('close', (status) => {
+      if (!failed && status === 0) resolve()
+      else reject(new PlaybackError('player-failed'))
+    })
+  })
+  const stop = () => {
+    if (child.pid != null && child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
+  }
+  signal.addEventListener('abort', stop, { once: true })
+  if (signal.aborted) stop()
+  return { child, exited, stop, detach: () => signal.removeEventListener('abort', stop) }
+}
+
+export async function playLocal({ player, path, signal }, { startPlayer = spawn } = {}) {
+  signal.throwIfAborted()
+  if (typeof path !== 'string' || !isAbsolute(path)) throw new PlaybackError('invalid-audio')
+  const { exited, detach } = launchPlayer(player, path, 'ignore', signal, startPlayer)
+  try {
+    await exited
+  } finally {
+    detach()
+    signal.throwIfAborted()
+  }
+}
+
+export async function playFish({ player, signal, ...request }, { fetchAudio = fetch, startPlayer = spawn } = {}) {
+  const playing = new AbortController()
+  const stopSignal = AbortSignal.any([signal, playing.signal])
+  return withFishAudio({ ...request, signal: stopSignal }, async (pipeAudio) => {
+    const { child, exited, detach, stop } = launchPlayer(player, 'pipe:0', 'pipe', stopSignal, startPlayer)
+    let pump
+    try {
+      if (!child.stdin) throw new PlaybackError('player-failed')
+      pump = pipeAudio(child.stdin)
+      await Promise.all([pump, exited])
+    } finally {
+      detach()
+      // Abort the upstream connection before awaiting stream teardown (a read may be parked at EOF).
+      playing.abort()
+      stop()
+      await Promise.allSettled([pump, exited])
+    }
+  }, { fetchAudio })
 }

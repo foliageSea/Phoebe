@@ -6,17 +6,17 @@ import { createBalanceLookup, registerBalanceRoute } from '../balance.js'
 
 const wallet = (data, status = 200) => Response.json(data, { status })
 
-test('wallet lookup uses the host key and returns only paid balance and free availability', async () => {
+test('wallet lookup uses the host key and returns only paid balance', async () => {
   const lookup = createBalanceLookup(async () => ' test-key ', {
     async fetchWallet(url, options) {
-      assert.equal(url, 'https://api.fish.audio/wallet/self/api-credit?check_free_credit=true')
+      assert.equal(url, 'https://api.fish.audio/wallet/self/api-credit')
       assert.equal(options.headers.authorization, 'Bearer test-key')
       assert.equal(options.redirect, 'error')
       assert.ok(options.signal instanceof AbortSignal)
       return wallet({ credit: '0.0200', has_free_credit: true, user_id: 'private', cumulative_top_up: '42' })
     },
   })
-  assert.deepEqual(await lookup(), { status: 'ok', credit: '0.0200', hasFreeCredit: true })
+  assert.deepEqual(await lookup(), { status: 'ok', credit: '0.0200' })
 })
 
 test('wallet cache coalesces requests, expires, and never reuses another key’s balance', async () => {
@@ -35,7 +35,7 @@ test('wallet cache coalesces requests, expires, and never reuses another key’s
   })
   const pending = [lookup(), lookup()]
   finish(wallet({ credit: '1', has_free_credit: null }))
-  assert.deepEqual(await Promise.all(pending), Array(2).fill({ status: 'ok', credit: '1', hasFreeCredit: null }))
+  assert.deepEqual(await Promise.all(pending), Array(2).fill({ status: 'ok', credit: '1' }))
   assert.equal((await lookup()).credit, '1')
   assert.equal(calls, 1)
   clock = 15_001
@@ -107,12 +107,13 @@ test('client mounts the balance in the composer dock, hides it without a key, an
       return { ok: true, json: async () => result }
     },
   })
-  config.apply({ effect() {}, slots: {
+  config.apply({ effect() {}, configForms: { get: () => ({ subscribe() {}, getSnapshot() {}, mutate() {} }) }, slots: {
     inject(name, fn) { if (name === 'conversation.composer.dock') fn() },
     register(entry, Component) { boundSlot = { entry, Component } },
   } })
-  assert.equal(boundSlot.entry.id, 'phoebe-voice.balance')
-  const render = () => { index = 0; return boundSlot.Component({ t: key => key }) }
+  assert.equal(boundSlot.entry.id, 'phoebe-voice.dock')
+  const badge = boundSlot.Component({ t: key => key }).children[2]
+  const render = () => { index = 0; return badge.tag(badge.props) }
   assert.equal(render(), null)
   const disposeMissing = effect()
   const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -123,13 +124,13 @@ test('client mounts the balance in the composer dock, hides it without a key, an
   result = { status: 'ok', credit: '12.50', hasFreeCredit: true }
   const dispose = effect()
   await tick()
-  const button = render().children[1]
+  const button = render()
   assert.equal(button.tag, 'button')
-  assert.equal(button.children[0], 'balance · 12.50 · freeAvailable')
+  assert.equal(button.children[0], 'balance · 12.50')
   result = { status: 'ok', credit: '0', hasFreeCredit: false }
   button.props.onClick()
   await tick()
-  assert.equal(render().children[1].children[0], 'balance · 0 · freeExhausted')
+  assert.equal(render().children[0], 'balance · 0')
   assert.equal(requests, 3)
   dispose()
   assert.equal(stopped, true)

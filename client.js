@@ -1,8 +1,10 @@
 window.__ModuleLoader__.load({
   id: '@local/dsh-phoebe-voice',
   factory(require) {
-    const { createElement: h, useEffect, useId, useRef, useState } = require('react')
+    const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = require('react')
     const NS = 'phoebeVoice.config'
+    const MODES = ['off', 'notice', 'brief']
+    const PRESETS_URL = 'api/phoebe-voice.presets'
     const KEY = 'FISH_API_KEY'
     const DEFAULT_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
     const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
@@ -20,7 +22,7 @@ window.__ModuleLoader__.load({
       restore: '使用默认菲比音色', invalidVoice: '请输入 1–128 位英文字母、数字、连字符或下划线。',
       mode: '播报模式', off: '关闭', notice: '仅固定提醒', brief: '朗读简短摘句',
       offHint: '不发送任何播报请求。',
-      noticeHint: '只把固定中文提醒发给 Fish Audio，不发送问题或答复正文。',
+      noticeHint: '只播放本地固定提醒，不发起语音合成请求。默认菲比音色已内置；自定义音色需先生成。',
       briefHint: '会把问题和最终答复的短摘句发给 Fish Audio。敏感会话建议使用「仅固定提醒」。',
       loading: '正在加载播报设置…', unavailable: '无法读取播报设置。请确认插件行已启用，然后重新打开此页。',
       readOnly: '当前页面无权保存播报设置。', conflict: '播报设置已在别处更新。请放弃草稿，再从已保存的设置继续编辑。',
@@ -28,7 +30,13 @@ window.__ModuleLoader__.load({
       saveVoice: '保存播报设置', discard: '放弃草稿',
       balance: 'Fish 余额', balanceRefresh: '点击刷新 Fish Audio API 余额',
       balanceUnavailable: '查询失败', balanceUnauthorized: '请检查 API Key',
-      freeAvailable: '免费额度可用', freeExhausted: '免费额度已用完', freeUnknown: '免费额度状态未知',
+      quickMode: '菲比播报模式', quickLabel: '菲比', shortOff: '静音', shortNotice: '固定', shortBrief: '摘句',
+      presets: '固定音频预设', presetsHint: '默认菲比音色已内置三条固定提醒。使用其他音色时，请保存音色后生成预设。',
+      presetReady: '固定音频已就绪', presetMissing: '尚未生成固定音频', presetMissingKey: '请先保存 Fish Audio 密钥。',
+      presetUnavailable: '暂时无法读取或生成固定音频。', presetBusy: '正在生成固定音频…',
+      presetBilling: '当前模型的额度不足或不可用，请检查 Fish Audio 账户。', presetKeyError: '请检查 Fish Audio 密钥。',
+      presetRateLimited: 'Fish Audio 请求过多，请稍后再试。',
+      generateFree: '免费生成预设', generatePaid: '付费生成预设',
     }
     const en = {
       summary: 'Configure the Fish Audio key, reference voice, and playback mode.',
@@ -44,7 +52,7 @@ window.__ModuleLoader__.load({
       restore: 'Use default Phoebe voice', invalidVoice: 'Use 1–128 letters, digits, hyphens, or underscores.',
       mode: 'Playback mode', off: 'Off', notice: 'Fixed reminders only', brief: 'Read short excerpts',
       offHint: 'No synthesis requests are sent.',
-      noticeHint: 'Sends only fixed Chinese reminders to Fish Audio, not questions or replies.',
+      noticeHint: 'Plays only local fixed reminders without a synthesis request. Phoebe is bundled; prepare presets for custom voices.',
       briefHint: 'Sends short excerpts from questions and final replies to Fish Audio. Use fixed reminders for sensitive sessions.',
       loading: 'Loading playback settings…', unavailable: 'Playback settings are unavailable. Check that the plugin row is enabled and reopen this page.',
       readOnly: 'This page cannot save playback settings.', conflict: 'Settings changed elsewhere. Discard this draft, then edit the saved settings again.',
@@ -52,7 +60,13 @@ window.__ModuleLoader__.load({
       saveVoice: 'Save playback settings', discard: 'Discard draft',
       balance: 'Fish balance', balanceRefresh: 'Click to refresh Fish Audio API balance',
       balanceUnavailable: 'Unavailable', balanceUnauthorized: 'Check API key',
-      freeAvailable: 'Free credit available', freeExhausted: 'Free credit exhausted', freeUnknown: 'Free credit status unknown',
+      quickMode: 'Phoebe playback mode', quickLabel: 'Phoebe', shortOff: 'Mute', shortNotice: 'Fixed', shortBrief: 'Excerpt',
+      presets: 'Fixed audio presets', presetsHint: 'Three fixed reminders are included for Phoebe. Save and prepare any custom voice before using it.',
+      presetReady: 'Fixed audio is ready', presetMissing: 'Fixed audio has not been prepared', presetMissingKey: 'Save a Fish Audio key first.',
+      presetUnavailable: 'Could not read or prepare fixed audio.', presetBusy: 'Preparing fixed audio…',
+      presetBilling: 'The selected model has no available credit. Check your Fish Audio account.', presetKeyError: 'Check your Fish Audio key.',
+      presetRateLimited: 'Fish Audio is rate limiting requests. Try again later.',
+      generateFree: 'Generate with free model', generatePaid: 'Generate with paid model',
     }
     const css = `
       .phoebe-config { display:grid; gap:16px; max-width:720px; min-width:0; color:var(--dsw-alias-label-primary); }
@@ -80,7 +94,7 @@ window.__ModuleLoader__.load({
       return h('p', { role: 'status', className: 'phoebe-config__status', 'data-tone': tone }, key ? t(key) : '')
     }
 
-    function KeyForm({ t, useRemoteAccess, credentials }) {
+    function KeyForm({ t, useRemoteAccess, credentials, onKeySaved }) {
       const id = useId()
       const input = useRef(null)
       const busy = useRef(false)
@@ -127,6 +141,7 @@ window.__ModuleLoader__.load({
           setInfo({ configured: true, writable: true })
           setCheckFailed(false)
           setFeedback({ key: 'keySaved', tone: 'success' })
+          onKeySaved()
         } catch {
           setFeedback({ key: 'keySaveFailed', tone: 'error' })
         } finally {
@@ -223,7 +238,7 @@ window.__ModuleLoader__.load({
             h('select', {
               id: `${id}-mode`, className: 'phoebe-config__input', value: mode, disabled,
               'aria-describedby': `${id}-mode-hint`, onChange: (event) => edit({ mode: event.currentTarget.value }),
-            }, ['off', 'notice', 'brief'].map(value => h('option', { key: value, value }, t(value)))),
+            }, MODES.map(value => h('option', { key: value, value }, t(value)))),
             h('p', { id: `${id}-mode-hint`, className: 'phoebe-config__text' }, t(`${mode}Hint`))),
           !writable && status(t, 'readOnly'),
           conflict && status(t, 'conflict', 'error'),
@@ -237,8 +252,65 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function PresetPanel({ t, useRemoteAccess }) {
+      const [result, setResult] = useState(null)
+      const [working, setWorking] = useState(false)
+      const lifetime = useRef(null)
+      const canWrite = useRemoteAccess('settings/mutate')
+      const canCheck = useRemoteAccess('settings/describe')
+
+      async function request(signal, model) {
+        try {
+          const response = await fetch(PRESETS_URL, {
+            signal, cache: 'no-store',
+            ...(model ? { method: 'POST', headers: { 'x-phoebe-preset-model': model } } : {}),
+          })
+          const payload = response.ok || response.status === 409 ? await response.json() : null
+          if (!signal.aborted) setResult(payload?.status ?? 'unavailable')
+        } catch {
+          if (!signal.aborted) setResult('unavailable')
+        }
+      }
+
+      useEffect(() => {
+        if (!canCheck) return
+        const controller = new AbortController()
+        lifetime.current = controller
+        setResult(null)
+        setWorking(false)
+        void request(controller.signal)
+        return () => { controller.abort(); lifetime.current = null }
+      }, [canCheck])
+
+      async function generate(model) {
+        const signal = lifetime.current?.signal
+        if (!canWrite || !signal || signal.aborted || working) return
+        setWorking(true)
+        try { await request(signal, model) }
+        finally { if (!signal.aborted) setWorking(false) }
+      }
+
+      if (!canCheck) return null
+      const feedback = {
+        ready: 'presetReady', missing: 'presetMissing', 'missing-key': 'presetMissingKey',
+        preparing: 'presetBusy', 'http-402': 'presetBilling', 'http-401': 'presetKeyError',
+        'http-403': 'presetKeyError', 'http-429': 'presetRateLimited',
+      }
+      const message = working ? 'presetBusy' : result === null ? 'loading' : feedback[result] ?? 'presetUnavailable'
+      const canGenerate = canWrite && !working && result !== null && !['ready', 'missing-key'].includes(result)
+      return h('section', { className: 'phoebe-config__card' },
+        h('h4', { className: 'phoebe-config__heading' }, t('presets')),
+        h('p', { className: 'phoebe-config__text' }, t('presetsHint')),
+        status(t, message),
+        canWrite && result !== 'ready' && h('div', { className: 'phoebe-config__actions' },
+          actionsButton(t('generateFree'), { disabled: !canGenerate, onClick: () => void generate('s2.1-pro-free') }),
+          actionsButton(t('generatePaid'), { disabled: !canGenerate, onClick: () => void generate('s2.1-pro') })))
+    }
+
     const balanceCss = `
-      .phoebe-balance { box-sizing:border-box; display:inline-flex; align-items:center; min-width:0; max-width:100%; margin-inline-start:auto; }
+      .phoebe-dock { box-sizing:border-box; display:inline-flex; flex-wrap:wrap; gap:4px 6px; align-items:center; justify-content:flex-end; min-width:0; max-width:100%; margin-inline-start:auto; }
+      .phoebe-dock__mode { margin:0; }
+      .phoebe-dock__error { font-size:11px; color:var(--dsw-alias-state-error-primary); }
       .phoebe-balance__button { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         border:1px solid var(--dsw-alias-border-l1); border-radius:999px; padding:0 7px; background:var(--dsw-alias-bg-layer-1);
         color:var(--dsw-alias-label-secondary); cursor:pointer; font:inherit; font-size:11px; line-height:20px; font-variant-numeric:tabular-nums; }
@@ -289,22 +361,64 @@ window.__ModuleLoader__.load({
 
       if (!['ok', 'unavailable', 'unauthorized'].includes(balance?.status)) return null
       const detail = balance.status === 'ok'
-        ? [balance.credit, t(balance.hasFreeCredit === true ? 'freeAvailable' : balance.hasFreeCredit === false ? 'freeExhausted' : 'freeUnknown')].join(' · ')
+        ? balance.credit
         : t(balance.status === 'unauthorized' ? 'balanceUnauthorized' : 'balanceUnavailable')
       const label = t('balance') + ' · ' + detail
       const title = label + ' — ' + t('balanceRefresh')
-      return h('span', { className: 'phoebe-balance' }, h('style', null, balanceCss),
-        h('button', { type: 'button', className: 'phoebe-balance__button', 'aria-busy': busy, title,
-          'aria-label': title, onClick: () => { void refresh.current?.() } }, label))
+      return h('button', { type: 'button', className: 'phoebe-balance__button', 'aria-busy': busy, title,
+          'aria-label': title, onClick: () => { void refresh.current?.() } }, label)
+    }
+
+    function QuickMode({ t, quickForm, useRemoteAccess }) {
+      const state = useSyncExternalStore(quickForm.subscribe, quickForm.getSnapshot)
+      const pending = useRef(false)
+      const [saving, setSaving] = useState(false)
+      const [failed, setFailed] = useState(false)
+      const canWrite = useRemoteAccess('settings/mutate')
+      if (state.status !== 'ready' || !state.value) return null
+      const mode = state.value.mode ?? 'off'
+      const writable = canWrite && state.writable && Number.isSafeInteger(state.revision)
+
+      async function change(event) {
+        const value = event.currentTarget.value
+        if (!writable || pending.current || !MODES.includes(value) || value === mode) return
+        pending.current = true
+        setSaving(true)
+        setFailed(false)
+        try {
+          if (!await quickForm.mutate([{ op: 'set', path: ['mode'], value }], state.revision)) setFailed(true)
+        } catch { setFailed(true) }
+        finally { pending.current = false; setSaving(false) }
+      }
+
+      return h('span', { className: 'phoebe-dock__mode' },
+        h('select', {
+          className: 'phoebe-balance__button', value: mode, onChange: change, disabled: !writable || saving,
+          'aria-label': t('quickMode'), title: t(`${mode}Hint`), 'aria-busy': saving,
+        }, MODES.map((value, i) => h('option', { key: value, value },
+          t('quickLabel') + ' · ' + t(['shortOff', 'shortNotice', 'shortBrief'][i])))),
+        failed && h('span', { className: 'phoebe-dock__error', role: 'status' }, t('saveFailed')))
+    }
+
+    function Dock(props) {
+      return h('span', { className: 'phoebe-dock' }, h('style', null, balanceCss),
+        h(QuickMode, props), h(BalanceBadge, props))
+    }
+
+    function ConfigPage(props) {
+      const [keyRevision, setKeyRevision] = useState(0)
+      const state = props.form?.state
+      return h('div', { className: 'phoebe-config' }, h('style', null, css),
+        h(KeyForm, { ...props, onKeySaved: () => setKeyRevision(value => value + 1) }), h(PlaybackForm, props),
+        state?.status === 'ready' && h(PresetPanel, { ...props, key: `${state.value?.reference_id}:${keyRevision}` }))
     }
 
     function Page(props) {
-      if (props.view === 'summary') return props.t('summary')
-      return h('div', { className: 'phoebe-config' }, h('style', null, css), h(KeyForm, props), h(PlaybackForm, props))
+      return props.view === 'summary' ? props.t('summary') : h(ConfigPage, props)
     }
 
     return {
-      inject: ['slots', 'locale', 'remote', 'remote.credentials'],
+      inject: ['slots', 'locale', 'remote', 'remote.credentials', 'configForms'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'phoebe-voice: settings translations')
         const credentials = {
@@ -316,9 +430,16 @@ window.__ModuleLoader__.load({
           },
           async set(key) { return (await ctx.remote.credentials.set(KEY, key)).ok },
         }
-        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-          name: 'conversation.composer.dock', id: 'phoebe-voice.balance', order: 50, locale: NS,
-        }, BalanceBadge))
+        ctx.slots.inject('conversation.composer.dock', () => {
+          const form = ctx.configForms.get('phoebe-voice')
+          const quickForm = {
+            subscribe: form.subscribe.bind(form), getSnapshot: form.getSnapshot.bind(form), mutate: form.mutate.bind(form),
+          }
+          return ctx.slots.register({
+            name: 'conversation.composer.dock', id: 'phoebe-voice.dock', order: 50, locale: NS,
+            inject: () => ({ quickForm }),
+          }, Dock)
+        })
         ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
           name: 'plugins.row.config', key: '@local/dsh-phoebe-voice#phoebe-voice', locale: NS,
           inject: () => ({ credentials }),

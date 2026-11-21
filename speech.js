@@ -4,11 +4,11 @@ const OPENERS = {
   ask: '漂泊者，可以请你帮我确认一下吗？',
   final: '我把这一轮的要点整理好了。',
 }
-const NOTICES = {
+export const NOTICES = Object.freeze({
   ask: '漂泊者，有件事想请你确认。请看看对话里的问题吧。',
   final: '漂泊者，这一轮的答复就在对话里。请慢慢看。',
   plan: '漂泊者，计划已写在对话里。可以请你看看，再决定是否继续吗？',
-}
+})
 const MORE_QUESTIONS = '其他问题也在对话里。'
 // Defense in depth for brief mode, not a guarantee that prose contains no sensitive data.
 const SENSITIVE = /(?:密码|口令|验证码|取件码|核销码|安全码|解锁码|识别码|密钥|令牌|秘钥|凭据|私钥|身份证|银行卡|手机号|住址|password|passwd|passphrase|\b(?:pin|otp)\b|(?:verification|access|security|pickup)[\s_-]+code|api[\s_-]*key|secret|token|credential|private[\s_-]*key|bearer|authorization|\b(?:sk|rk|ghp|gho|github_pat|xox[baprs])[-_][a-z0-9_-]{8,}\b|\bAKIA[A-Z0-9]{16}\b|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b\d{7,}\b|\b[a-z0-9_+/=-]{28,}\b)/iu

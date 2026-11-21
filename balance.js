@@ -1,7 +1,7 @@
-const WALLET_URL = 'https://api.fish.audio/wallet/self/api-credit?check_free_credit=true'
+const WALLET_URL = 'https://api.fish.audio/wallet/self/api-credit'
 const CACHE_MS = 15_000
 
-// Return only the two public-to-the-badge fields; never relay upstream error bodies.
+// Return only the paid balance; never relay upstream error bodies.
 export function createBalanceLookup(resolveKey, { fetchWallet = fetch, now = Date.now } = {}) {
   let current
   return async function lookupBalance() {
@@ -35,7 +35,7 @@ export function createBalanceLookup(resolveKey, { fetchWallet = fetch, now = Dat
         if (typeof data?.credit !== 'string' || !/^-?\d{1,24}(?:\.\d{1,24})?$/.test(data.credit)) {
           return { status: 'unavailable' }
         }
-        return { status: 'ok', credit: data.credit, hasFreeCredit: typeof data.has_free_credit === 'boolean' ? data.has_free_credit : null }
+        return { status: 'ok', credit: data.credit }
       } catch {
         return { status: 'unavailable' }
       } finally {
