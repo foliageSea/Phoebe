@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { createPresets, registerPresetRoute } from '../preset-route.js'
-import { PHOEBE_VOICE } from '../playback.js'
-import { NOTICES } from '../speech.js'
+import { createPresets, registerPresetRoute } from '../host/preset-route.js'
+import { PHOEBE_VOICE } from '../host/playback.js'
+import { NOTICES } from '../host/speech.js'
 
 const url = 'http://127.0.0.1/api/phoebe-voice.presets'
 

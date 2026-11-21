@@ -1,11 +1,11 @@
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
-import { registerBalanceRoute } from './balance.js'
-import { installHooks, isWithinWorkspace } from './hooks.js'
-import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './playback.js'
-import { createPresets, registerPresetRoute } from './preset-route.js'
-import { NOTICES } from './speech.js'
+import { registerBalanceRoute } from './host/balance.js'
+import { installHooks, isWithinWorkspace } from './host/hooks.js'
+import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './host/playback.js'
+import { createPresets, registerPresetRoute } from './host/preset-route.js'
+import { NOTICES } from './host/speech.js'
 
 export const name = 'phoebe-voice'
 export const inject = ['agents', 'credentials', 'workingDirectory']

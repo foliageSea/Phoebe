@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { createBalanceLookup, registerBalanceRoute } from '../balance.js'
+import { createBalanceLookup, registerBalanceRoute } from '../host/balance.js'
 
 const wallet = (data, status = 200) => Response.json(data, { status })
 

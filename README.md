@@ -27,4 +27,6 @@
 
 ## 开发与参考
 
+根目录保留 DSH 的宿主和 Web 客户端入口；宿主端的会话钩子、播报、预设与余额查询实现位于 `host/`。内置音频、翻译和测试分别位于 `audio/`、`locale/`、`test/`。
+
 使用 Node.js 22+ 运行 `npm ci --ignore-scripts`、`npm test`。DSH 的 `user-questions/request` 与 `session/event` 负责触发，Fish [HTTP 音频流](https://docs.fish.audio/features/realtime-streaming.md)按块输入 `ffplay`。台词为原创中文短句，参考[库街区图鉴入口](https://wiki.kurobbs.com/mc/item/1309523456688947200)和[菲比角色条目](https://wuthering.wiki/character_1506.html)。

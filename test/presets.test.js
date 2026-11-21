@@ -4,9 +4,9 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { test } from 'node:test'
-import { MAX_AUDIO_BYTES, playLocal } from '../playback.js'
-import { createPresets } from '../presets.js'
-import { NOTICES } from '../speech.js'
+import { MAX_AUDIO_BYTES, playLocal } from '../host/playback.js'
+import { createPresets } from '../host/presets.js'
+import { NOTICES } from '../host/speech.js'
 
 const fixed = Object.values(NOTICES)
 const audio = (body = Uint8Array.of(1, 2, 3)) => new Response(body, { headers: { 'content-type': 'audio/mpeg' } })

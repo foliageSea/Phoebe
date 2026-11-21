@@ -6,9 +6,9 @@ import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { test } from 'node:test'
 import { apply, Config } from '../index.js'
-import { installHooks, isWithinWorkspace } from '../hooks.js'
-import { createPlayback, PHOEBE_VOICE, playFish } from '../playback.js'
-import { finalSpeech, MAX_SPOKEN, questionSpeech } from '../speech.js'
+import { installHooks, isWithinWorkspace } from '../host/hooks.js'
+import { createPlayback, PHOEBE_VOICE, playFish } from '../host/playback.js'
+import { finalSpeech, MAX_SPOKEN, questionSpeech } from '../host/speech.js'
 
 function deferred() {
   let resolve, reject
