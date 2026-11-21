@@ -1,0 +1,6 @@
+- insert:
+    - id: phoebe-voice
+      name: '@local/dsh-phoebe-voice'
+      config:
+        mode: 'off'
+        workspaceRoot: '/Users/foliage/Desktop/Phoebe'

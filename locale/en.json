@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Phoebe voice announcements",
+    "description": "Plays Chinese announcements for DSH questions and final replies on the host, using Phoebe’s voice by default. Open the component row to set the Fish Audio key, voice ID, and playback mode. Off by default; requires ffplay. Fixed reminders send no conversation text; excerpt mode sends short excerpts to Fish Audio."
+  }
+}
