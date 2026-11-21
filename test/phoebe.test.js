@@ -16,7 +16,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function fakeHost({ cwd = process.cwd(), origin, mode = 'brief' } = {}) {
+function fakeHost({ cwd = process.cwd(), origin, mode = 'brief', workspaceRoot = process.cwd() } = {}) {
   const hooks = new Map()
   const queued = []
   const canceled = []
@@ -30,7 +30,7 @@ function fakeHost({ cwd = process.cwd(), origin, mode = 'brief' } = {}) {
     workingDirectory: { get: (session) => session.cwd },
   }
   const playback = { enqueue: (job) => queued.push(job), cancelOwner: (owner) => canceled.push(owner) }
-  installHooks(host, { mode, workspaceRoot: process.cwd() }, playback, (error) => warnings.push(error))
+  installHooks(host, { mode, workspaceRoot }, playback, (error) => warnings.push(error))
   let seq = 10
   const publish = (type, data, extra = {}) => hooks.get('session/event').fn(session, { type, data, seq: seq++, ...extra })
   const start = (turn, step = 1) => { publish('turn/start', { turn }); publish('step/start', { turn, step }) }
@@ -162,6 +162,18 @@ test('replays, tool-only or empty final steps, compacted messages and aborted tu
   h.message(5, 1, [text('重新整理的历史。')], {}, { op: 'replace' })
   h.end(5)
   assert.equal(h.queued.length, 0)
+})
+
+test('filesystem root scope queues fixed notices in separate workspaces', async () => {
+  for (const cwd of [process.cwd(), tmpdir()]) {
+    const h = fakeHost({ cwd, mode: 'notice', workspaceRoot: '/' })
+    await h.ask({ questions }, async () => 'unchanged')
+    h.start(1); h.message(1, 1, [text('测试通过。')]); h.end(1)
+    assert.deepEqual(h.queued.map(job => [job.kind, job.text]), [
+      ['ask', questionSpeech(questions, 'notice')],
+      ['final', finalSpeech('测试通过。', 'notice')],
+    ])
+  }
 })
 
 test('working directory, delegated Agent and live identity restrict questions and results', async (t) => {
