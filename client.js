@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-phoebe-voice',
+  id: '@foliagesea/dsh-phoebe-voice',
   factory(require) {
     const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = require('react')
     const NS = 'phoebeVoice.config'
@@ -441,7 +441,7 @@ window.__ModuleLoader__.load({
           }, Dock)
         })
         ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-          name: 'plugins.row.config', key: '@local/dsh-phoebe-voice#phoebe-voice', locale: NS,
+          name: 'plugins.row.config', key: '@foliagesea/dsh-phoebe-voice#phoebe-voice', locale: NS,
           inject: () => ({ credentials }),
         }, Page))
       },

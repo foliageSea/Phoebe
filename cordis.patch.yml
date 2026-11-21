@@ -1,6 +1,6 @@
 - insert:
     - id: phoebe-voice
-      name: '@local/dsh-phoebe-voice'
+      name: '@foliagesea/dsh-phoebe-voice'
       config:
         mode: 'off'
         workspaceRoot: '/'
