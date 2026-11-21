@@ -4,7 +4,7 @@
   "description": "Phoebe-style Fish Audio announcements for DSH questions and final replies.",
   "private": true,
   "type": "module",
-  "engines": { "dsh": "0.2.2-rc.5", "node": ">=22" },
+  "engines": { "dsh": ">=0.2.2-rc.5", "node": ">=22" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
