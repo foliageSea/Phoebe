@@ -55,6 +55,19 @@ function plainLines(value) {
   return lines
 }
 
+export function summaryInput(text) {
+  return Array.from(plainLines(text).join('\n')).slice(0, 3000).join('').trim()
+}
+
+export function summarySpeech(value) {
+  const text = value.trim()
+  if (!text || LENGTH(text) > MAX_SPOKEN || !/\p{Script=Han}/u.test(text)) return undefined
+  // Reject, rather than partially reading, unsafe or non-plain model output.
+  const normalized = text.normalize('NFKC').replace(/\s+/g, ' ')
+  if (plainLines(text).join(' ') !== normalized || sentences(text).length > 2) return undefined
+  return text.replace(/\s+/g, ' ')
+}
+
 function sentences(line) {
   return line.split(/(?<=[。！？!?；;])\s*|(?<=\.)\s+(?=[\p{L}\p{N}])/u)
     .map(segment => segment.trim()).filter(segment => /\p{L}/u.test(segment))
@@ -79,14 +92,14 @@ export function questionSpeech(questions, mode) {
   const first = questions[0]
   if (first.intent?.kind === 'approval') return ''
   if (first.intent?.kind === 'plan-review') return NOTICES.plan
-  if (mode !== 'brief') return NOTICES.ask
+  if (mode !== 'brief' && mode !== 'summary') return NOTICES.ask
   const more = questions.length > 1 ? MORE_QUESTIONS : ''
   const part = excerpt(first.question, MAX_SPOKEN - LENGTH(OPENERS.ask + more), false, 2)
   return part ? `${OPENERS.ask}${part}${more}` : NOTICES.ask
 }
 
 export function finalSpeech(text, mode) {
-  if (mode !== 'brief') return NOTICES.final
+  if (mode !== 'brief' && mode !== 'summary') return NOTICES.final
   const part = excerpt(text, MAX_SPOKEN - LENGTH(OPENERS.final), true, 2)
   return part ? `${OPENERS.final}${part}` : NOTICES.final
 }

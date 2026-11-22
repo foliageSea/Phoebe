@@ -3,13 +3,13 @@ window.__ModuleLoader__.load({
   factory(require) {
     const { createElement: h, useEffect, useId, useRef, useState, useSyncExternalStore } = require('react')
     const NS = 'phoebeVoice.config'
-    const MODES = ['off', 'notice', 'brief']
+    const MODES = ['off', 'notice', 'brief', 'summary']
     const PRESETS_URL = 'api/phoebe-voice.presets'
     const KEY = 'FISH_API_KEY'
     const DEFAULT_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
     const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
     const zh = {
-      summary: '配置 Fish Audio 密钥、参考音色和播报模式。',
+      description: '配置 Fish Audio 密钥、参考音色和播报模式。',
       credentials: 'Fish Audio 凭据', keyLabel: 'API Key（FISH_API_KEY）', keyPlaceholder: '输入新的 Fish Audio API Key',
       keyHint: '密钥保存在 DSH 凭据库，不写入插件配置。已保存的密钥不会显示在这里。',
       keyLoading: '正在读取密钥状态…', keyPresent: '已配置密钥', keyMissing: '未配置密钥',
@@ -20,17 +20,21 @@ window.__ModuleLoader__.load({
       playback: '语音播报', voiceLabel: '音色 ID（reference_id）',
       voiceHint: '填写 Fish Audio 音色 ID，不是音色页面链接。修改后从下次播报开始使用。',
       restore: '使用默认菲比音色', invalidVoice: '请输入 1–128 位英文字母、数字、连字符或下划线。',
-      mode: '播报模式', off: '关闭', notice: '仅固定提醒', brief: '朗读简短摘句',
+      mode: '播报模式', off: '关闭', notice: '仅固定提醒', brief: '朗读简短摘句', summary: '菲比 AI 简述',
       offHint: '不发送任何播报请求。',
       noticeHint: '只播放本地固定提醒，不发起语音合成请求。默认菲比音色已内置；自定义音色需先生成。',
       briefHint: '会把问题和最终答复的短摘句发给 Fish Audio。敏感会话建议使用「仅固定提醒」。',
+      summaryHint: '启用后，过滤后的最终答复会发给本轮 DSH 模型生成菲比风格简述，再把播报稿发给 Fish Audio。提问仍用摘句；敏感会话建议使用「仅固定提醒」。',
       loading: '正在加载播报设置…', unavailable: '无法读取播报设置。请确认插件行已启用，然后重新打开此页。',
       readOnly: '当前页面无权保存播报设置。', conflict: '播报设置已在别处更新。请放弃草稿，再从已保存的设置继续编辑。',
       saveFailed: '未能确认播报设置已保存。请检查连接或权限，再核对已保存的值。', saved: '播报设置已保存。',
       saveVoice: '保存播报设置', discard: '放弃草稿',
       balance: 'Fish 余额', balanceRefresh: '点击刷新 Fish Audio API 余额',
       balanceUnavailable: '查询失败', balanceUnauthorized: '请检查 API Key',
-      quickMode: '菲比播报模式', quickLabel: '菲比', shortOff: '静音', shortNotice: '固定', shortBrief: '摘句',
+      quickMode: '菲比播报模式', quickLabel: '菲比', shortOff: '静音', shortNotice: '固定', shortBrief: '摘句', shortSummary: 'AI 简述',
+      confirmSummaryTitle: '开启菲比 AI 简述？', confirmSummary: '开启 AI 简述', cancelSummary: '取消',
+      confirmSummaryData: '过滤后的最终答复会发给本轮 DSH 模型，生成的播报稿会发给 Fish Audio。',
+      confirmSummaryScope: '此设置适用于播报范围内的会话。敏感对话建议使用固定提醒。',
       presets: '固定音频预设', presetsHint: '默认菲比音色已内置三条固定提醒。使用其他音色时，请保存音色后生成预设。',
       presetReady: '固定音频已就绪', presetMissing: '尚未生成固定音频', presetMissingKey: '请先保存 Fish Audio 密钥。',
       presetUnavailable: '暂时无法读取或生成固定音频。', presetBusy: '正在生成固定音频…',
@@ -39,7 +43,7 @@ window.__ModuleLoader__.load({
       generateFree: '免费生成预设', generatePaid: '付费生成预设',
     }
     const en = {
-      summary: 'Configure the Fish Audio key, reference voice, and playback mode.',
+      description: 'Configure the Fish Audio key, reference voice, and playback mode.',
       credentials: 'Fish Audio credentials', keyLabel: 'API key (FISH_API_KEY)', keyPlaceholder: 'Enter a new Fish Audio API key',
       keyHint: 'The key is kept in the DSH credential store, not in plugin settings. Saved keys are never displayed here.',
       keyLoading: 'Checking credential status…', keyPresent: 'Key configured', keyMissing: 'No key configured',
@@ -50,17 +54,21 @@ window.__ModuleLoader__.load({
       playback: 'Voice announcements', voiceLabel: 'Voice ID (reference_id)',
       voiceHint: 'Enter a Fish Audio voice ID, not a voice page URL. Changes apply to the next announcement.',
       restore: 'Use default Phoebe voice', invalidVoice: 'Use 1–128 letters, digits, hyphens, or underscores.',
-      mode: 'Playback mode', off: 'Off', notice: 'Fixed reminders only', brief: 'Read short excerpts',
+      mode: 'Playback mode', off: 'Off', notice: 'Fixed reminders only', brief: 'Read short excerpts', summary: 'Phoebe AI summary',
       offHint: 'No synthesis requests are sent.',
       noticeHint: 'Plays only local fixed reminders without a synthesis request. Phoebe is bundled; prepare presets for custom voices.',
       briefHint: 'Sends short excerpts from questions and final replies to Fish Audio. Use fixed reminders for sensitive sessions.',
+      summaryHint: 'Sends the filtered final reply to the DSH model used for that turn, then sends the Phoebe-style script to Fish Audio. Questions still use excerpts. Use fixed reminders for sensitive sessions.',
       loading: 'Loading playback settings…', unavailable: 'Playback settings are unavailable. Check that the plugin row is enabled and reopen this page.',
       readOnly: 'This page cannot save playback settings.', conflict: 'Settings changed elsewhere. Discard this draft, then edit the saved settings again.',
       saveFailed: 'Could not confirm the save. Check the connection or permissions, then review the saved values.', saved: 'Playback settings saved.',
       saveVoice: 'Save playback settings', discard: 'Discard draft',
       balance: 'Fish balance', balanceRefresh: 'Click to refresh Fish Audio API balance',
       balanceUnavailable: 'Unavailable', balanceUnauthorized: 'Check API key',
-      quickMode: 'Phoebe playback mode', quickLabel: 'Phoebe', shortOff: 'Mute', shortNotice: 'Fixed', shortBrief: 'Excerpt',
+      quickMode: 'Phoebe playback mode', quickLabel: 'Phoebe', shortOff: 'Mute', shortNotice: 'Fixed', shortBrief: 'Excerpt', shortSummary: 'AI summary',
+      confirmSummaryTitle: 'Enable Phoebe AI summary?', confirmSummary: 'Enable AI summary', cancelSummary: 'Cancel',
+      confirmSummaryData: 'The filtered final reply goes to the DSH model used for that turn. The resulting script goes to Fish Audio.',
+      confirmSummaryScope: 'This applies to sessions in the configured playback scope. Use fixed reminders for sensitive conversations.',
       presets: 'Fixed audio presets', presetsHint: 'Three fixed reminders are included for Phoebe. Save and prepare any custom voice before using it.',
       presetReady: 'Fixed audio is ready', presetMissing: 'Fixed audio has not been prepared', presetMissingKey: 'Save a Fish Audio key first.',
       presetUnavailable: 'Could not read or prepare fixed audio.', presetBusy: 'Preparing fixed audio…',
@@ -309,7 +317,21 @@ window.__ModuleLoader__.load({
 
     const balanceCss = `
       .phoebe-dock { box-sizing:border-box; display:inline-flex; flex-wrap:wrap; gap:4px 6px; align-items:center; justify-content:flex-end; min-width:0; max-width:100%; margin-inline-start:auto; }
-      .phoebe-dock__mode { margin:0; }
+      .phoebe-dock__mode { display:inline-flex; flex-wrap:wrap; gap:4px 6px; align-items:center; min-width:0; max-width:100%; }
+      .phoebe-summary-dialog { box-sizing:border-box; inline-size:min(420px, calc(100% - 32px)); max-block-size:calc(100% - 32px);
+        overflow:auto; overscroll-behavior:contain; padding:22px; margin:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:16px;
+        background:var(--dsw-alias-bg-layer-1, Canvas); color:var(--dsw-alias-label-primary, CanvasText);
+        box-shadow:0 18px 60px rgb(0 0 0 / .3); font:14px/1.55 system-ui,sans-serif; }
+      .phoebe-summary-dialog::backdrop { background:rgb(0 0 0 / .44); }
+      .phoebe-summary-dialog__title { margin:0 0 10px; font-size:17px; font-weight:650; line-height:1.4; }
+      .phoebe-summary-dialog__data, .phoebe-summary-dialog__scope { margin:0; overflow-wrap:anywhere; }
+      .phoebe-summary-dialog__scope { margin-block-start:8px; color:var(--dsw-alias-label-secondary, CanvasText); font-size:13px; }
+      .phoebe-summary-dialog__actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin-block-start:20px; }
+      .phoebe-summary-dialog__button { min-block-size:36px; padding:6px 14px; border:1px solid var(--dsw-alias-border-l2, ButtonBorder);
+        border-radius:8px; background:var(--dsw-alias-bg-layer-2, ButtonFace); color:var(--dsw-alias-label-primary, ButtonText); font:inherit; cursor:pointer; }
+      .phoebe-summary-dialog__button[data-primary] { background:var(--dsw-alias-button-primary-fill, Highlight);
+        color:var(--dsw-alias-label-primary-foreground, HighlightText); }
+      .phoebe-summary-dialog__button:focus-visible { outline:2px solid var(--dsw-alias-brand-primary, Highlight); outline-offset:2px; }
       .phoebe-dock__error { font-size:11px; color:var(--dsw-alias-state-error-primary); }
       .phoebe-balance__button { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         border:1px solid var(--dsw-alias-border-l1); border-radius:999px; padding:0 7px; background:var(--dsw-alias-bg-layer-1);
@@ -374,14 +396,37 @@ window.__ModuleLoader__.load({
       const pending = useRef(false)
       const [saving, setSaving] = useState(false)
       const [failed, setFailed] = useState(false)
+      const [confirmRevision, setConfirmRevision] = useState(null)
+      const dialog = useRef(null)
+      const id = useId()
       const canWrite = useRemoteAccess('settings/mutate')
-      if (state.status !== 'ready' || !state.value) return null
-      const mode = state.value.mode ?? 'off'
-      const writable = canWrite && state.writable && Number.isSafeInteger(state.revision)
+      const ready = state.status === 'ready' && Boolean(state.value)
+      const mode = state.value?.mode ?? 'off'
+      const writable = ready && canWrite && state.writable && Number.isSafeInteger(state.revision)
+      const confirming = writable && mode !== 'summary' && confirmRevision === state.revision
 
-      async function change(event) {
+      useEffect(() => {
+        const node = dialog.current
+        if (confirming && node && !node.open) node.showModal()
+        else if (!confirming && node?.open) node.close()
+      }, [confirming])
+
+      if (!ready) return null
+
+      function change(event) {
         const value = event.currentTarget.value
         if (!writable || pending.current || !MODES.includes(value) || value === mode) return
+        if (value === 'summary') {
+          setFailed(false)
+          setConfirmRevision(state.revision)
+          return
+        }
+        return save(value)
+      }
+
+      async function save(value) {
+        if (!writable || pending.current || value === mode || (value === 'summary' && !confirming)) return
+        setConfirmRevision(null)
         pending.current = true
         setSaving(true)
         setFailed(false)
@@ -391,17 +436,29 @@ window.__ModuleLoader__.load({
         finally { pending.current = false; setSaving(false) }
       }
 
-      return h('span', { className: 'phoebe-dock__mode' },
+      return h('div', { className: 'phoebe-dock__mode' },
         h('select', {
           className: 'phoebe-balance__button', value: mode, onChange: change, disabled: !writable || saving,
           'aria-label': t('quickMode'), title: t(`${mode}Hint`), 'aria-busy': saving,
         }, MODES.map((value, i) => h('option', { key: value, value },
-          t('quickLabel') + ' · ' + t(['shortOff', 'shortNotice', 'shortBrief'][i])))),
+          t('quickLabel') + ' · ' + t(['shortOff', 'shortNotice', 'shortBrief', 'shortSummary'][i])))),
+        h('dialog', { ref: dialog, className: 'phoebe-summary-dialog',
+          'aria-labelledby': `${id}-title`, 'aria-describedby': `${id}-data ${id}-scope`,
+          onCancel: (event) => { event.preventDefault(); setConfirmRevision(null) },
+        },
+          h('h2', { id: `${id}-title`, className: 'phoebe-summary-dialog__title' }, t('confirmSummaryTitle')),
+          h('p', { id: `${id}-data`, className: 'phoebe-summary-dialog__data' }, t('confirmSummaryData')),
+          h('p', { id: `${id}-scope`, className: 'phoebe-summary-dialog__scope' }, t('confirmSummaryScope')),
+          h('div', { className: 'phoebe-summary-dialog__actions' },
+            h('button', { type: 'button', className: 'phoebe-summary-dialog__button', autoFocus: true,
+              onClick: () => setConfirmRevision(null) }, t('cancelSummary')),
+            h('button', { type: 'button', className: 'phoebe-summary-dialog__button', 'data-primary': true,
+              onClick: () => save('summary') }, t('confirmSummary')))),
         failed && h('span', { className: 'phoebe-dock__error', role: 'status' }, t('saveFailed')))
     }
 
     function Dock(props) {
-      return h('span', { className: 'phoebe-dock' }, h('style', null, balanceCss),
+      return h('div', { className: 'phoebe-dock' }, h('style', null, balanceCss),
         h(QuickMode, props), h(BalanceBadge, props))
     }
 
@@ -414,7 +471,7 @@ window.__ModuleLoader__.load({
     }
 
     function Page(props) {
-      return props.view === 'summary' ? props.t('summary') : h(ConfigPage, props)
+      return props.view === 'summary' ? props.t('description') : h(ConfigPage, props)
     }
 
     return {

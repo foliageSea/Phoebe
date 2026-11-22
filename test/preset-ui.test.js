@@ -66,10 +66,14 @@ test('dock switches only the persisted playback mode and retains the accepted mo
   let plugin, slot, component, index = 0, finish
   const values = []
   const writes = []
+  const modal = { open: false, showModal() { this.open = true }, close() { this.open = false } }
+  let effect
   let state = { status: 'ready', value: { mode: 'brief', reference_id: 'custom' }, revision: 7, writable: true }
   const React = {
     createElement: (tag, props, ...children) => ({ tag, props, children }),
     useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useId: () => 'summary-hint',
+    useEffect: callback => { effect = callback },
     useRef(initial) { const i = index++; return values[i] ??= { current: initial } },
     useState(initial) { const i = index++; return [values[i] ??= initial, value => { values[i] = value }] },
   }
@@ -89,17 +93,65 @@ test('dock switches only the persisted playback mode and retains the accepted mo
     register(entry, Component) { slot = entry; component = Component },
   } })
   const view = component({ ...slot.inject(), t: key => key, useRemoteAccess: () => true }).children[1]
-  const render = () => { index = 0; return view.tag(view.props) }
+  const render = () => {
+    index = 0
+    const tree = view.tag(view.props)
+    tree.children[1].props.ref.current = modal
+    effect()
+    return tree
+  }
   const selection = () => render().children[0]
+  const dialog = () => render().children[1]
   assert.equal(selection().props.value, 'brief')
-  assert.equal(selection().children[0].map(item => item.props.value).join(','), 'off,notice,brief')
+  assert.equal(selection().children[0].map(item => item.props.value).join(','), 'off,notice,brief,summary')
   const change = selection().props.onChange({ currentTarget: { value: 'notice' } })
   assert.equal(selection().props.disabled, true)
   assert.deepEqual(writes, [{ ops: [{ op: 'set', path: ['mode'], value: 'notice' }], revision: 7 }])
   finish(false)
   await change
   assert.equal(selection().props.value, 'brief')
-  assert.equal(render().children[1].children[0], 'saveFailed')
+  assert.equal(render().children[2].children[0], 'saveFailed')
   state = { ...state, revision: 8, value: { ...state.value, mode: 'off' } }
   assert.equal(selection().props.value, 'off')
+  const pickSummary = () => selection().props.onChange({ currentTarget: { value: 'summary' } })
+  pickSummary()
+  assert.equal(writes.length, 1, 'AI summary is not saved before confirmation')
+  assert.equal(selection().props.value, 'off')
+  assert.equal(dialog().tag, 'dialog')
+  assert.equal(modal.open, true)
+  assert.equal(dialog().props['aria-labelledby'], dialog().children[0].props.id)
+  assert.equal(dialog().children[1].children[0], 'confirmSummaryData')
+  assert.equal(dialog().children[3].children[0].props.autoFocus, true)
+  dialog().children[3].children[0].props.onClick()
+  dialog()
+  assert.equal(modal.open, false)
+  assert.equal(writes.length, 1)
+  pickSummary()
+  let prevented = false
+  dialog().props.onCancel({ preventDefault: () => { prevented = true } })
+  dialog()
+  assert.equal(prevented, true)
+  assert.equal(modal.open, false)
+  assert.equal(writes.length, 1)
+  pickSummary()
+  dialog()
+  assert.equal(modal.open, true)
+  state = { ...state, revision: 9 }
+  const staleConfirm = dialog().children[3].children[1].props.onClick
+  assert.equal(modal.open, false, 'another settings revision invalidates confirmation')
+  await staleConfirm()
+  assert.equal(writes.length, 1)
+  pickSummary()
+  const enable = dialog().children[3].children[1].props.onClick()
+  dialog()
+  assert.equal(modal.open, false)
+  assert.deepEqual(writes.at(-1), { ops: [{ op: 'set', path: ['mode'], value: 'summary' }], revision: 9 })
+  state = { ...state, revision: 10, value: { ...state.value, mode: 'summary' } }
+  finish(true)
+  await enable
+  assert.equal(selection().props.value, 'summary')
+  const mute = selection().props.onChange({ currentTarget: { value: 'off' } })
+  assert.deepEqual(writes.at(-1), { ops: [{ op: 'set', path: ['mode'], value: 'off' }], revision: 10 })
+  finish(true)
+  await mute
 })

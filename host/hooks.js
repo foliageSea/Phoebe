@@ -118,8 +118,12 @@ export function installHooks(ctx, config, playback, warn) {
         }
         if (!state.text || !eligible(state.agent, session)) return
         const mode = config.mode
+        const route = mode === 'summary' ? session.requestHeader?.()?.config : undefined
+        const summary = route?.provider && route.model ? {
+          text: state.text, route: { provider: route.provider, model: route.model },
+        } : undefined
         playback.enqueue({
-          kind: 'final', owner: session, text: finalSpeech(state.text, mode),
+          kind: 'final', owner: session, text: finalSpeech(state.text, mode), summary,
           isCurrent: () => config.mode === mode && eligible(state.agent, session),
         })
         break

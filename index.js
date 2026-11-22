@@ -7,11 +7,12 @@ import { isFullPath } from './host/paths.js'
 import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './host/playback.js'
 import { createPresets, registerPresetRoute } from './host/preset-route.js'
 import { NOTICES } from './host/speech.js'
+import { createSummary } from './host/summary.js'
 
 export const name = 'phoebe-voice'
 export const inject = ['agents', 'credentials', 'workingDirectory']
 export const Config = z.object({
-  mode: z.union(['off', 'notice', 'brief']).default('off').volatile(),
+  mode: z.union(['off', 'notice', 'brief', 'summary']).default('off').volatile(),
   reference_id: z.string().pattern(/^[A-Za-z0-9_-]{1,128}$/).default(PHOEBE_VOICE).volatile(),
   workspaceRoot: z.string().default(ALL_WORKSPACES),
   fishModel: z.union(['s2.1-pro-free', 's2.1-pro']).default('s2.1-pro-free'),
@@ -57,20 +58,30 @@ export function apply(ctx, config) {
   const playback = createPlayback(async (job, signal) => {
     const player = findPlayer(config.playerPath)
     if (!player) throw new PlaybackError('missing-player')
-    if (fixedScripts.has(job.text)) {
-      const path = await presets.find(job.text)
+    let { text } = job
+    let key
+    if (job.summary) {
+      key = (await resolveKey())?.trim()
+      signal.throwIfAborted()
+      if (!job.isCurrent()) return
+      if (key) text = await createSummary(ctx.get?.('llm'), job.summary, signal) ?? text
+      signal.throwIfAborted()
+      if (!job.isCurrent()) return
+    }
+    if (fixedScripts.has(text)) {
+      const path = await presets.find(text)
       signal.throwIfAborted()
       if (!job.isCurrent()) return
       if (!path) throw new PlaybackError('missing-preset')
       await playLocal({ player, path, signal })
       return
     }
-    const key = (await resolveKey())?.trim()
+    if (!job.summary) key = (await resolveKey())?.trim()
     signal.throwIfAborted()
     if (!key) throw new PlaybackError('missing-key')
     if (!job.isCurrent()) return
     await playFish({
-      key, player, text: job.text, model: config.fishModel, referenceId: config.reference_id.get(), signal,
+      key, player, text, model: config.fishModel, referenceId: config.reference_id.get(), signal,
     })
   }, warn)
   ctx.effect(() => () => playback.dispose(), 'phoebe-voice: stop local playback')

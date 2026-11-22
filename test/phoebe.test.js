@@ -141,6 +141,21 @@ test('only a completed turn with a final visible response speaks, once', () => {
   assert.doesNotMatch(h.queued[0].text, /推理|正在查看/)
 })
 
+test('only summary-mode completed replies carry text and the recorded model route for synthesis', async () => {
+  for (const mode of ['notice', 'brief', 'summary']) {
+    const h = fakeHost({ mode })
+    h.session.requestHeader = () => ({ config: { provider: 'configured', model: 'selected', reasoningEffort: 'max' } })
+    await h.ask({ questions }, async () => 'unchanged')
+    assert.equal(h.queued[0].summary, undefined)
+    assert.equal(h.queued[0].text, questionSpeech(questions, mode === 'summary' ? 'brief' : mode))
+    h.start(1); h.message(1, 1, [text('尚未验证音频输出。')]); h.end(1)
+    assert.equal(h.queued[1].text, finalSpeech('尚未验证音频输出。', mode === 'summary' ? 'brief' : mode))
+    assert.deepEqual(h.queued[1].summary, mode === 'summary' ? {
+      text: '尚未验证音频输出。', route: { provider: 'configured', model: 'selected' },
+    } : undefined)
+  }
+})
+
 test('replays, tool-only or empty final steps, compacted messages and aborted turns stay silent', () => {
   const h = fakeHost()
   h.publish('turn/start', { turn: 1 }, { seq: 3 })
