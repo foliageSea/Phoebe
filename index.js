@@ -73,8 +73,16 @@ export function apply(ctx, config) {
     let { text } = job
     if (!job.summary && fixedScripts.has(text)) return playPreset(text)
 
-    // Leave time in the outer playback deadline for the offline fallback.
-    const dynamicSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+    // Bound preparation (including full audio collection for the browser), not Host playback.
+    const deadline = new AbortController()
+    const timer = setTimeout(() => deadline.abort(new PlaybackError('timeout')), 20_000)
+    timer.unref()
+    const dynamicSignal = AbortSignal.any([signal, deadline.signal])
+    let hostAudioStarted = false
+    const onAudioStart = () => {
+      hostAudioStarted = true
+      clearTimeout(timer)
+    }
     try {
       const key = (await resolveKey())?.trim()
       dynamicSignal.throwIfAborted()
@@ -85,14 +93,17 @@ export function apply(ctx, config) {
       if (!fixedScripts.has(text)) {
         if (!key) throw new PlaybackError('missing-key')
         const request = { key, text, model: getModel(), referenceId: getVoice(), signal: dynamicSignal }
-        return await (player ? playFish({ ...request, player }) : synthesizeBrowserAudio(request))
+        return await (player ? playFish({ ...request, player, onAudioStart }) : synthesizeBrowserAudio(request))
       }
     } catch (error) {
       signal.throwIfAborted()
       if (!job.isCurrent()) return
-      warn(dynamicSignal.aborted ? new PlaybackError('timeout') : error)
-      // One offline attempt only; never retry synthesis or enqueue another alert.
-      return playPreset(NOTICES[job.kind], true)
+      warn(deadline.signal.aborted ? deadline.signal.reason : error)
+      // Once bytes have gone to the Host player, this job must not start another clip.
+      if (!hostAudioStarted) return playPreset(NOTICES[job.kind], true)
+      return
+    } finally {
+      clearTimeout(timer)
     }
     return playPreset(text)
   }

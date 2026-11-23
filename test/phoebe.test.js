@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import childProcess from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { syncBuiltinESMExports } from 'node:module'
 import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -364,3 +366,79 @@ test('oversize audio fails closed', { timeout: 2_000 }, async () => {
   }), { code: 'audio-limit' })
   assert.equal(killed, true)
 })
+
+for (const scenario of ['slow-playback', 'stream-error', 'startup-timeout']) {
+  test('Host fallback respects the first audio chunk: ' + scenario, { timeout: 2_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const events = new Map()
+    const playerInputs = []
+    const requested = deferred()
+    const launched = deferred()
+    const firstAudio = deferred()
+    const fallback = deferred()
+    const logs = t.mock.method(console, 'warn', () => {})
+    let upstream
+    let responseSignal
+    t.mock.method(globalThis, 'fetch', async (_url, { signal }) => {
+      responseSignal = signal
+      return audioResponse(new ReadableStream({ start(controller) {
+        upstream = controller
+        signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+        if (scenario !== 'startup-timeout') controller.enqueue(Uint8Array.of(1))
+        requested.resolve()
+      } }))
+    })
+    const player = t.mock.method(childProcess, 'spawn', (_file, args) => {
+      const input = args.at(-1)
+      playerInputs.push(input)
+      launched.resolve()
+      const child = fakePlayer(() => firstAudio.resolve())
+      if (input !== 'pipe:0') queueMicrotask(() => {
+        child.exitCode = 0
+        child.emit('close', 0)
+        fallback.resolve()
+      })
+      return child
+    })
+    syncBuiltinESMExports()
+    let dispose
+    try {
+      const session = { id: 'main', header: {}, firstLiveSeq: 1 }
+      apply({
+        agents: new Map([[session.id, { session }]]), workingDirectory: { get: () => process.cwd() },
+        credentials: { resolve: () => ({ value: 'fixture-key' }) },
+        on(name, fn) { events.set(name, fn) }, inject() {}, effect(fn) { dispose = fn() },
+      }, parse({ mode: 'brief', playerPath: process.execPath }).value)
+      const publish = (type, data, surfaceOp) => events.get('session/event')(session, { type, data, surfaceOp, seq: 1 })
+      publish('turn/start', { turn: 1 })
+      publish('step/start', { turn: 1, step: 1 })
+      publish('assistant/message', { turn: 1, step: 1, message: { content: [text('测试通过。')] } }, 'append')
+      publish('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await requested.promise
+      await launched.promise
+      if (scenario === 'startup-timeout') {
+        t.mock.timers.tick(20_000)
+        await fallback.promise
+        assert.equal(responseSignal.aborted, true)
+        assert.equal(playerInputs.length, 2)
+        assert.match(playerInputs[1], /[\\/]final\.mp3$/)
+        assert.deepEqual(logs.mock.calls.map(call => call.arguments[0]), ['[phoebe-voice] timeout.'])
+      } else {
+        await firstAudio.promise
+        t.mock.timers.tick(20_000)
+        assert.equal(responseSignal.aborted, false)
+        if (scenario === 'stream-error') upstream.error(new Error('upstream disconnected'))
+        else upstream.close()
+        // Allow the stream teardown and any offline attempt to settle before asserting.
+        await new Promise(resolve => setImmediate(resolve))
+        await new Promise(resolve => setImmediate(resolve))
+        assert.deepEqual(playerInputs, ['pipe:0'])
+        assert.equal(logs.mock.callCount(), scenario === 'stream-error' ? 1 : 0)
+      }
+    } finally {
+      await dispose?.()
+      player.mock.restore()
+      syncBuiltinESMExports()
+    }
+  })
+}

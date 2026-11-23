@@ -130,11 +130,14 @@ export function createPlayback(play, report, now = Date.now) {
   }
 }
 
-async function* boundedAudio(body) {
+async function* boundedAudio(body, onAudioStart) {
   let bytes = 0
   for await (const chunk of body) {
+    if (!chunk.byteLength) continue
+    const first = bytes === 0
     bytes += chunk.byteLength
     if (bytes > MAX_AUDIO_BYTES) throw new PlaybackError('audio-limit')
+    if (first) onAudioStart?.()
     yield chunk
   }
   if (!bytes) throw new PlaybackError('empty-audio')
@@ -159,7 +162,8 @@ export async function withFishAudio({ key, text, model, referenceId = PHOEBE_VOI
     if (!body || !/^(?:audio\/[^;]+|application\/octet-stream)(?:;|$)/i.test(response.headers.get('content-type') ?? '')) {
       throw new PlaybackError('invalid-audio')
     }
-    const pipeAudio = (output) => pipeline(Readable.fromWeb(body), boundedAudio, output, { signal: receiveSignal })
+    const pipeAudio = (output, onAudioStart) => pipeline(Readable.fromWeb(body),
+      source => boundedAudio(source, onAudioStart), output, { signal: receiveSignal })
     return await consume(pipeAudio)
   } finally {
     receiving.abort()
@@ -208,7 +212,7 @@ export async function playLocal({ player, path, signal }, { startPlayer = spawn 
   }
 }
 
-export async function playFish({ player, signal, ...request }, { fetchAudio = fetch, startPlayer = spawn } = {}) {
+export async function playFish({ player, signal, onAudioStart, ...request }, { fetchAudio = fetch, startPlayer = spawn } = {}) {
   const playing = new AbortController()
   const stopSignal = AbortSignal.any([signal, playing.signal])
   return withFishAudio({ ...request, signal: stopSignal }, async (pipeAudio) => {
@@ -216,7 +220,7 @@ export async function playFish({ player, signal, ...request }, { fetchAudio = fe
     let pump
     try {
       if (!child.stdin) throw new PlaybackError('player-failed')
-      pump = pipeAudio(child.stdin)
+      pump = pipeAudio(child.stdin, onAudioStart)
       await Promise.all([pump, exited])
     } finally {
       detach()
