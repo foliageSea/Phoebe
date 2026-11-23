@@ -30,6 +30,24 @@ test('Windows lookup searches only absolute PATH entries in order for ffplay.exe
   assert.equal(findPlayer(undefined, { ...options, env: {} }), undefined)
 })
 
+test('Linux lookup falls back to absolute Host PATH entries in order', () => {
+  const visited = []
+  const expected = '/opt/audio tools/bin/ffplay'
+  const options = {
+    platform: 'linux',
+    env: { PATH: ':.::relative:/usr/bin:/opt/missing:/opt/audio tools/bin:/opt/later' },
+    probe(path) { visited.push(path); return path === expected },
+  }
+  assert.equal(findPlayer(undefined, options), expected)
+  assert.deepEqual(visited, [
+    '/opt/homebrew/bin/ffplay', '/usr/local/bin/ffplay', '/usr/bin/ffplay', '/opt/missing/ffplay', expected,
+  ])
+  visited.length = 0
+  assert.equal(findPlayer('/configured/ffplay', options), undefined)
+  assert.deepEqual(visited, ['/configured/ffplay'])
+  assert.equal(findPlayer(undefined, { ...options, env: {} }), undefined)
+})
+
 test('explicit paths take precedence without falling back, and macOS keeps its fixed candidates', () => {
   const options = {
     platform: win,

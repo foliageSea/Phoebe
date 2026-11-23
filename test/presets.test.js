@@ -177,7 +177,19 @@ function fakeLocalPlayer() {
   return child
 }
 
-test('local playback passes an absolute filename as a single argument without a shell or credential env', async () => {
+test('local playback keeps Host audio settings but does not inherit the credential env', async (t) => {
+  const envFixture = { FISH_API_KEY: 'never-forward-this-key' }
+  if (process.platform === 'linux') {
+    Object.assign(envFixture, { XDG_RUNTIME_DIR: '/run/test-audio', PULSE_SERVER: 'unix:/run/test-audio/pulse/native' })
+  }
+  for (const [key, value] of Object.entries(envFixture)) {
+    const previous = process.env[key]
+    t.after(() => {
+      if (previous === undefined) delete process.env[key]
+      else process.env[key] = previous
+    })
+    process.env[key] = value
+  }
   const child = fakeLocalPlayer()
   const path = join(tmpdir(), 'Phoebe notice ; untouched.mp3')
   const work = playLocal({ player: '/bin/ffplay', path, signal: new AbortController().signal }, {
@@ -190,6 +202,13 @@ test('local playback passes an absolute filename as a single argument without a 
       const expectedEnv = { LANG: 'en_US.UTF-8' }
       if (process.platform === 'win32') {
         for (const key of ['SystemRoot', 'WINDIR']) {
+          if (process.env[key]) expectedEnv[key] = process.env[key]
+        }
+      }
+      if (process.platform === 'linux') {
+        expectedEnv.XDG_RUNTIME_DIR = envFixture.XDG_RUNTIME_DIR
+        expectedEnv.PULSE_SERVER = envFixture.PULSE_SERVER
+        for (const key of ['PULSE_COOKIE', 'PIPEWIRE_RUNTIME_DIR']) {
           if (process.env[key]) expectedEnv[key] = process.env[key]
         }
       }

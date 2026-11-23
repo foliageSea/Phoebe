@@ -50,6 +50,9 @@ const parse = (config) => Config['~standard'].validate(config)
 test('configuration defaults to silence and all workspaces; explicit paths must be absolute', () => {
   const defaults = parse({}).value
   assert.equal(defaults.mode.get(), 'off')
+  assert.equal(defaults.playbackTarget.get(), 'host')
+  assert.equal(parse({ playbackTarget: 'browser' }).value.playbackTarget.get(), 'browser')
+  assert.ok(parse({ playbackTarget: 'both' }).issues.length)
   assert.equal(defaults.workspaceRoot, '/')
   assert.doesNotThrow(() => apply({ on() {}, inject() {}, effect() {} }, parse({ mode: 'notice' }).value))
   assert.equal(defaults.reference_id.get(), PHOEBE_VOICE)
