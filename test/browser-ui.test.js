@@ -10,7 +10,8 @@ const input = value => ({ currentTarget: { value } })
 function harness() {
   let plugin, hooks, index, translations, sessionId = 's/1?😀', canDescribe = true
   let state = { status: 'ready', value: { mode: 'brief', reference_id: 'custom', playbackTarget: 'browser' }, revision: 7, writable: true }
-  let control, failFetch = false
+  let failFetch = false, resumeGate
+  const subscribers = new Set()
   const slots = new Map()
   const writes = [], fetches = [], contexts = [], streams = [], decodes = [], sources = []
   const React = {
@@ -31,7 +32,10 @@ function harness() {
     state = 'suspended'
     destination = {}
     constructor() { contexts.push(this) }
-    async resume() { this.state = 'running' }
+    async resume() {
+      if (resumeGate) await resumeGate
+      this.state = 'running'
+    }
     async close() { this.state = 'closed' }
     decodeAudioData(buffer) {
       return new Promise((resolve, reject) => decodes.push({ resolve, reject, bytes: [...new Uint8Array(buffer)] }))
@@ -61,7 +65,7 @@ function harness() {
     },
   })
   const form = {
-    subscribe() { return () => {} },
+    subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener) },
     getSnapshot() { return state },
     get state() { return state },
     async mutate(ops, revision) {
@@ -86,26 +90,24 @@ function harness() {
     return render({ tag, props: { ...entry.inject(), t: key => key,
       useRemoteAccess: operation => operation !== 'settings/describe' || canDescribe, ...props } })
   }
-  function unmount() {
-    if (control) for (const hook of control.values) if (typeof hook.current === 'function') hook.current()
-    control = null
-  }
   const configHooks = []
   return {
-    writes, fetches, contexts, decodes, sources, translations, unmount, streams,
+    writes, fetches, contexts, decodes, sources, translations, streams,
     setSession: value => { sessionId = value },
-    setConfig: value => { state = { ...state, revision: state.revision + 1, value: { ...state.value, ...value } } },
+    setConfig: value => {
+      state = { ...state, revision: state.revision + 1, value: { ...state.value, ...value } }
+      for (const listener of subscribers) listener()
+    },
     setPermission: value => { canDescribe = value },
     failFetch: value => { failFetch = value },
+    holdResume: () => {
+      let unlock
+      resumeGate = new Promise(resolve => { unlock = resolve })
+      return unlock
+    },
     send: text => streams.at(-1).enqueue(new TextEncoder().encode(text)),
     dock() {
-      // Match React's keyed mount/unmount behavior, without mounting the other Dock children.
-      const entry = slot('conversation.composer.dock', { sessionId }).children[3]
-      const node = render(entry)
-      if (!node || control?.key !== node.props.key) unmount()
-      if (!node) return null
-      control ??= { key: node.props.key, values: [] }
-      return render(node, control.values)
+      return render(slot('conversation.composer.dock', { sessionId }).children[3])
     },
     config() {
       const config = slot('plugins.row.config', { form })
@@ -141,13 +143,8 @@ test('playback destination defaults to host and saves with mode in one revision-
   assert.equal(h.writes.length, 1, 'a stale destination draft cannot overwrite the latest revision')
 })
 
-test('dock gates browser activation, resumes on click, encodes strict session ID, and never auto-reopens', async () => {
+test('dock resumes on click, subscribes to all sessions, and stops on request', async () => {
   const h = harness()
-  for (const invalid of [undefined, null, 1, '', 'with space', 'id\n', 'id\x00', 'id\x7f', '\ud800', 'x'.repeat(257)]) {
-    h.setSession(invalid)
-    assert.equal(h.dock(), null)
-  }
-  h.setSession('s/1?😀')
   assert.equal(label(h.dock()), 'browserEnable')
   assert.equal(h.contexts.length, 0)
   assert.equal(h.fetches.length, 0)
@@ -156,7 +153,7 @@ test('dock gates browser activation, resumes on click, encodes strict session ID
   assert.equal(h.fetches.length, 0, 'fetch comes after resume')
   await turn()
   const request = h.fetches[0]
-  assert.equal(request.url, 'api/phoebe-voice.audio?session=s%2F1%3F%F0%9F%98%80')
+  assert.equal(request.url, 'api/phoebe-voice.audio?scope=all')
   assert.equal(request.options.cache, 'no-store')
   assert.equal(request.options.redirect, 'error')
   assert.equal(request.options.headers['x-phoebe-browser-audio'], '1')
@@ -167,34 +164,52 @@ test('dock gates browser activation, resumes on click, encodes strict session ID
   assert.equal(request.options.signal.aborted, true)
   assert.equal(h.contexts[0].state, 'closed')
 
-  for (const reason of ['session', 'target', 'mode', 'permission', 'unmount']) {
-    pending = click(h.dock())
+})
+
+test('switching sessions or leaving chat does not stop or recreate the stream', async () => {
+  const h = harness()
+  const unlock = h.holdResume()
+  const pending = click(h.dock())
+  h.setSession('another-session')
+  assert.equal(label(h.dock()), 'browserDisable')
+  unlock()
+  await turn()
+  h.send('{"type":"ready"}\n{"type":"audio","audio":"AA=="}\n')
+  await turn()
+  h.decodes[0].resolve({})
+  await turn()
+  assert.equal(h.sources[0].started, true)
+  // No Dock render is needed to receive a clip while another page is open.
+  h.send('{"type":"audio","audio":"AQ=="}\n')
+  await turn()
+  h.decodes[1].resolve({})
+  await turn()
+  assert.equal(h.sources[1].started, true)
+  h.setSession('third-session')
+  assert.equal(label(h.dock()), 'browserDisable')
+  assert.equal(h.contexts.length, 1)
+  assert.equal(h.fetches.length, 1)
+  assert.equal(h.fetches[0].options.signal.aborted, false)
+  await click(h.dock())
+  await pending
+  assert.equal(h.contexts[0].state, 'closed')
+})
+
+test('turning off playback or losing permission revokes the tab unlock', async () => {
+  const cases = [h => h.setConfig({ playbackTarget: 'host' }), h => h.setConfig({ mode: 'off' }), h => h.setPermission(false)]
+  for (const change of cases) {
+    const h = harness()
+    const pending = click(h.dock())
     await turn()
-    const stream = h.fetches.at(-1)
-    const context = h.contexts.at(-1)
-    h.send('{"type":"ready"}\n{"type":"audio","audio":"AA=="}\n')
-    await turn()
-    h.decodes.at(-1).resolve({})
-    await turn()
-    const source = h.sources.at(-1)
-    assert.equal(source.started, true)
-    if (reason === 'session') { h.setSession('different'); assert.equal(label(h.dock()), 'browserEnable') }
-    if (reason === 'target') { h.setConfig({ playbackTarget: 'host' }); assert.equal(h.dock(), null) }
-    if (reason === 'mode') { h.setConfig({ mode: 'off' }); assert.equal(h.dock(), null) }
-    if (reason === 'permission') { h.setPermission(false); assert.equal(h.dock(), null) }
-    if (reason === 'unmount') {
-      source.stop = () => { source.stopped = true; throw new Error('source already stopped') }
-      h.unmount()
-    }
+    change(h)
+    assert.equal(h.dock(), null)
     await pending
-    assert.equal(stream.options.signal.aborted, true, reason)
-    assert.equal(context.state, 'closed', reason)
-    assert.equal(source.stopped, true, reason)
-    assert.equal(source.disconnected, true, reason)
+    assert.equal(h.fetches[0].options.signal.aborted, true)
+    assert.equal(h.contexts[0].state, 'closed')
     h.setConfig({ playbackTarget: 'browser', mode: 'summary' })
     h.setPermission(true)
-    assert.equal(label(h.dock()), 'browserEnable', reason)
-    assert.equal(h.fetches.at(-1), stream, reason)
+    assert.equal(label(h.dock()), 'browserEnable')
+    assert.equal(h.fetches.length, 1)
   }
 })
 

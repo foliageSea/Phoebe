@@ -9,10 +9,10 @@ import { MAX_AUDIO_BYTES } from '../host/playback.js'
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve))
 const decoder = new TextDecoder()
-const request = (id, signal, header = '1') => new Request('http://localhost/api/phoebe-voice.audio?session=' + encodeURIComponent(id), {
+const request = (query = 'scope=all', signal, header = '1') => new Request('http://localhost/api/phoebe-voice.audio?' + query, {
   signal, headers: { 'x-phoebe-browser-audio': header },
 })
-const open = (browser, id) => browser.open(id, new AbortController().signal).body.getReader()
+const open = (browser) => browser.open(new AbortController().signal).body.getReader()
 const read = async reader => JSON.parse(decoder.decode((await reader.read()).value))
 const job = (owner, text, options) => ({ owner, text, kind: 'final', isCurrent: () => true, ...options })
 const owner = id => ({ id })
@@ -30,24 +30,24 @@ test('browser stream requires an explicit header and enabled output, is uncached
   const route = register(browser, () => enabled)
   assert.equal(route.path, '/api/phoebe-voice.audio')
   assert.deepEqual(route.methods, ['GET'])
-  assert.equal(route.fetch(request('main')).status, 409)
+  assert.equal(route.fetch(request()).status, 409)
   enabled = true
-  for (const req of [request('main', undefined, '0'), request('a b'), request(''), request('a'.repeat(257))]) {
+  for (const req of [request('scope=all', undefined, '0'), request('session=main'), request(''), request('scope=all&session=main')]) {
     assert.equal(route.fetch(req).status, 400)
   }
   const lifetime = new AbortController()
-  const response = route.fetch(request('main', lifetime.signal))
+  const response = route.fetch(request('scope=all', lifetime.signal))
   assert.equal(response.status, 200)
   assert.match(response.headers.get('cache-control'), /no-store/)
   const reader = response.body.getReader()
   assert.deepEqual(await read(reader), { type: 'ready' })
-  assert.equal(route.fetch(request('other')).status, 429)
+  assert.equal(route.fetch(request()).status, 429)
   lifetime.abort()
   assert.equal((await reader.read()).done, true)
-  assert.equal(route.fetch(request('other')).status, 200)
+  assert.equal(route.fetch(request()).status, 200)
 })
 
-test('live audio is synthesized once, never replayed, and stays in the selected session', async (t) => {
+test('one subscription receives new audio from multiple sessions without replay or duplicate synthesis', async (t) => {
   const calls = []
   let finish
   const browser = createBrowserAudio(({ text }) => {
@@ -56,43 +56,46 @@ test('live audio is synthesized once, never replayed, and stays in the selected 
   }, assert.fail)
   t.after(() => browser.close())
   const a = owner('main')
-  const b = owner('other')
+  const b = owner('background')
   browser.enqueue(job(a, 'no tabs'))
-  const first = open(browser, a.id)
-  const second = open(browser, a.id)
-  const other = open(browser, b.id)
-  for (const reader of [first, second, other]) assert.deepEqual(await read(reader), { type: 'ready' })
+  const first = open(browser)
+  const second = open(browser)
+  for (const reader of [first, second]) assert.deepEqual(await read(reader), { type: 'ready' })
   assert.deepEqual(calls, [])
   browser.enqueue(job(a, 'live'))
   await nextTick()
-  const late = open(browser, a.id)
+  const late = open(browser)
   assert.deepEqual(await read(late), { type: 'ready' })
-  finish(Buffer.from('audio'))
-  for (const reader of [first, second]) assert.deepEqual(await read(reader), { type: 'audio', audio: 'YXVkaW8=' })
-  assert.deepEqual(calls, ['live'])
-  browser.close()
-  assert.equal((await late.read()).done, true)
-  assert.equal((await other.read()).done, true)
+  finish(Buffer.from('first'))
+  for (const reader of [first, second]) assert.deepEqual(await read(reader), { type: 'audio', audio: Buffer.from('first').toString('base64') })
+  browser.enqueue(job(b, 'other session'))
+  await nextTick()
+  finish(Buffer.from('second'))
+  for (const reader of [first, second, late]) assert.deepEqual(await read(reader), { type: 'audio', audio: Buffer.from('second').toString('base64') })
+  assert.deepEqual(calls, ['live', 'other session'])
 })
 
 test('questions interrupt results; replying and changing turns stop audio already sent', async (t) => {
   const browser = createBrowserAudio(async ({ text }) => Buffer.from(text), assert.fail)
   t.after(() => browser.close())
   const session = owner('main')
-  const reader = open(browser, session.id)
+  const reader = open(browser)
   await read(reader)
   browser.enqueue(job(session, 'final'))
   assert.equal((await read(reader)).type, 'audio')
   const question = new AbortController()
-  browser.enqueue(job(session, 'question', { kind: 'ask', signal: question.signal }))
+  browser.enqueue(job(owner('background'), 'question', { kind: 'ask', signal: question.signal }))
   assert.equal((await read(reader)).type, 'stop')
   assert.equal((await read(reader)).type, 'audio')
   question.abort()
   assert.equal((await read(reader)).type, 'stop')
   browser.enqueue(job(session, 'new final'))
   assert.equal((await read(reader)).type, 'audio')
+  browser.cancelOwner(owner('unrelated'))
   browser.cancelOwner(session)
   assert.equal((await read(reader)).type, 'stop')
+  browser.close()
+  assert.equal((await reader.read()).done, true, 'only cancellation of the speaking session emits stop')
 })
 
 test('disconnecting the last tab cancels synthesis and errors reveal no upstream details', async (t) => {
@@ -105,7 +108,7 @@ test('disconnecting the last tab cancels synthesis and errors reveal no upstream
   }, error => warnings.push(error))
   t.after(() => browser.close())
   const session = owner('main')
-  const reader = open(browser, session.id)
+  const reader = open(browser)
   await read(reader)
   browser.enqueue(job(session, 'error'))
   assert.deepEqual(await read(reader), { type: 'error' })
@@ -150,7 +153,7 @@ test('browser fixed notices work through live hooks with no ffplay or Fish key',
     effect(register) { disposers.push(register()) },
   }, config)
   const route = routes.get('/api/phoebe-voice.audio')
-  const reader = route.fetch(request(session.id)).body.getReader()
+  const reader = route.fetch(request()).body.getReader()
   try {
     assert.deepEqual(await read(reader), { type: 'ready' })
     const event = (type, data, surfaceOp) => events.get('session/event')(session, { type, data, surfaceOp, seq: 1 })
@@ -162,10 +165,10 @@ test('browser fixed notices work through live hooks with no ffplay or Fish key',
     target = 'host'
     events.get('settings/document-updated')()
     assert.equal((await reader.read()).done, true)
-    assert.equal(route.fetch(request(session.id)).status, 409)
+    assert.equal(route.fetch(request()).status, 409)
     target = 'browser'
     events.get('app-boot/config-reload')()
-    const reopened = route.fetch(request(session.id)).body.getReader()
+    const reopened = route.fetch(request()).body.getReader()
     assert.deepEqual(await read(reopened), { type: 'ready' })
     await reopened.cancel()
   } finally {

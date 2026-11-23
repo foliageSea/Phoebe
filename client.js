@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
       restore: '使用默认菲比音色', invalidVoice: '请输入 1–128 位英文字母、数字、连字符或下划线。',
       mode: '播报模式', off: '关闭', notice: '仅固定提醒', brief: '朗读简短摘句', summary: '菲比 AI 简述',
       playbackTarget: '播报位置', host: '运行 DSH 的设备', browser: '当前浏览器',
-      playbackTargetHint: '选择浏览器后，需在每个标签页和会话的输入区单独开启浏览器播放。',
+      playbackTargetHint: '开启一次后，此标签页会播放配置范围内所有主会话的新提醒，包括未打开的会话。',
       browserEnable: '开启浏览器播放', browserDisable: '停止浏览器播放', browserRetry: '重试浏览器播放',
       browserConnecting: '正在连接浏览器音频…', browserFailed: '浏览器音频不可用，请重试。',
       browserClipFailed: '无法播放这条播报。浏览器仍在等待下一条播报。',
@@ -64,7 +64,7 @@ window.__ModuleLoader__.load({
       restore: 'Use default Phoebe voice', invalidVoice: 'Use 1–128 letters, digits, hyphens, or underscores.',
       mode: 'Playback mode', off: 'Off', notice: 'Fixed reminders only', brief: 'Read short excerpts', summary: 'Phoebe AI summary',
       playbackTarget: 'Playback destination', host: 'Device running DSH', browser: 'Browser',
-      playbackTargetHint: 'For browser playback, enable audio in the composer separately for each tab and session.',
+      playbackTargetHint: 'Enable once per tab to hear new announcements from all in-scope main conversations, even when not open.',
       browserEnable: 'Enable browser audio', browserDisable: 'Stop browser audio', browserRetry: 'Retry browser audio',
       browserConnecting: 'Connecting to browser audio…', browserFailed: 'Browser audio is unavailable. Please try again.',
       browserClipFailed: 'This announcement could not play. Still listening for the next one.',
@@ -483,11 +483,6 @@ window.__ModuleLoader__.load({
         failed && h('span', { className: 'phoebe-dock__error', role: 'status' }, t('saveFailed')))
     }
 
-    function validSessionId(sessionId) {
-      return typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 256 &&
-        !/[\s\x00-\x1f\x7f]/.test(sessionId) && !/[\ud800-\udfff]/u.test(sessionId)
-    }
-
     function stopBrowserClip(run) {
       run.sequence++
       const source = run.source
@@ -500,12 +495,32 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function closeBrowserAudio(run) {
-      run.controller.abort()
-      stopBrowserClip(run)
-      if (run.context && run.context.state !== 'closed') {
-        try { void run.context.close()?.catch(() => {}) } catch {}
+    // One explicit gesture and one owner-only stream per tab, independent of the Dock lifecycle.
+    let browserRun
+    let browserState = { status: 'idle', clipFailed: false }
+    const browserListeners = new Set()
+    const browserStore = {
+      subscribe(listener) {
+        browserListeners.add(listener)
+        return () => browserListeners.delete(listener)
+      },
+      getSnapshot: () => browserState,
+    }
+    function publishBrowserAudio(status, clipFailed = false) {
+      browserState = { status, clipFailed }
+      for (const listener of browserListeners) listener()
+    }
+    function disableBrowserAudio(status = 'idle') {
+      const run = browserRun
+      browserRun = undefined
+      if (run) {
+        run.controller.abort()
+        stopBrowserClip(run)
+        if (run.context && run.context.state !== 'closed') {
+          try { void run.context.close()?.catch(() => {}) } catch {}
+        }
       }
+      if (browserState.status !== status || browserState.clipFailed) publishBrowserAudio(status)
     }
 
     async function playBrowserClip(run, sequence, audio, onError) {
@@ -531,9 +546,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    async function readBrowserAudio(sessionId, run, onReady, onClipStatus, onError) {
+    async function readBrowserAudio(run, onReady, onClipStatus, onError) {
       const { signal } = run.controller
-      const response = await fetch('api/phoebe-voice.audio?session=' + encodeURIComponent(sessionId), {
+      const response = await fetch('api/phoebe-voice.audio?scope=all', {
         headers: { 'x-phoebe-browser-audio': '1' }, signal, cache: 'no-store', redirect: 'error',
       })
       if (signal.aborted) return
@@ -585,68 +600,44 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function BrowserAudioControl({ t, sessionId }) {
-      const mounted = useRef(false)
-      const active = useRef(null)
-      const [state, setState] = useState('idle')
-      const [clipFailed, setClipFailed] = useState(false)
-
-      function deactivate() {
-        const run = active.current
-        active.current = null
-        if (run) closeBrowserAudio(run)
+    async function toggleBrowserAudio() {
+      if (browserRun) { disableBrowserAudio(); return }
+      const run = { controller: new AbortController(), context: null, sequence: 0, source: null }
+      browserRun = run
+      publishBrowserAudio('connecting')
+      function fail() {
+        if (browserRun === run) disableBrowserAudio('failed')
       }
-
-      useLayoutEffect(() => {
-        mounted.current = true
-        return () => { mounted.current = false; deactivate() }
-      }, [])
-
-      async function toggle() {
-        if (!mounted.current) return
-        setClipFailed(false)
-        if (active.current) {
-          deactivate()
-          setState('idle')
-          return
-        }
-        const run = { controller: new AbortController(), context: null, sequence: 0, source: null }
-        active.current = run
-        setState('connecting')
-        function fail() {
-          if (active.current !== run) return
-          deactivate()
-          setState('failed')
-        }
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext
-          if (!AudioContext) throw new Error('Web Audio unavailable')
-          run.context = new AudioContext()
-          // Resume synchronously inside the click, before a fetch or any await.
-          await run.context.resume()
-          if (active.current !== run) return
-          await readBrowserAudio(sessionId, run, () => setState('active'), setClipFailed, fail)
-        } catch { fail() }
-      }
-
-      const enabled = state === 'connecting' || state === 'active'
-      return h('div', { className: 'phoebe-dock__mode' },
-        h('button', { type: 'button', className: 'phoebe-balance__button', onClick: toggle },
-          t(enabled ? 'browserDisable' : state === 'failed' ? 'browserRetry' : 'browserEnable')),
-        state === 'connecting' && h('span', { role: 'status' }, t('browserConnecting')),
-        (state === 'failed' || clipFailed) && h('span', { role: 'status', className: 'phoebe-dock__error' },
-          t(state === 'failed' ? 'browserFailed' : 'browserClipFailed')))
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext
+        if (!AudioContext) throw new Error('Web Audio unavailable')
+        run.context = new AudioContext()
+        // Resume synchronously inside the click, before a fetch or any await.
+        await run.context.resume()
+        if (browserRun !== run) return
+        await readBrowserAudio(run, () => publishBrowserAudio('active'),
+          clipFailed => publishBrowserAudio(browserState.status, clipFailed), fail)
+      } catch { fail() }
     }
 
-    function BrowserAudio({ t, sessionId, quickForm, useRemoteAccess }) {
-      const state = useSyncExternalStore(quickForm.subscribe, quickForm.getSnapshot)
+    function browserAllowed(state) {
+      return state.status === 'ready' && state.value?.playbackTarget === 'browser' &&
+        MODES.includes(state.value?.mode) && state.value.mode !== 'off'
+    }
+
+    function BrowserAudio({ t, quickForm, useRemoteAccess }) {
+      const config = useSyncExternalStore(quickForm.subscribe, quickForm.getSnapshot)
       const canRead = useRemoteAccess('settings/describe')
-      const mode = state.value?.mode
-      if (!canRead || state.status !== 'ready' || state.value?.playbackTarget !== 'browser' ||
-        !MODES.includes(mode) || mode === 'off' || !validSessionId(sessionId)) return null
-      // A different conversation mounts a fresh, inactive control. Nothing is
-      // persisted across sessions, tabs, or remounts after permission changes.
-      return h(BrowserAudioControl, { key: sessionId, t, sessionId })
+      const { status, clipFailed } = useSyncExternalStore(browserStore.subscribe, browserStore.getSnapshot)
+      useLayoutEffect(() => { if (!canRead) disableBrowserAudio() }, [canRead])
+      if (!canRead || !browserAllowed(config)) return null
+      const enabled = status === 'connecting' || status === 'active'
+      return h('div', { className: 'phoebe-dock__mode' },
+        h('button', { type: 'button', className: 'phoebe-balance__button', onClick: toggleBrowserAudio, 'aria-pressed': enabled },
+          t(enabled ? 'browserDisable' : status === 'failed' ? 'browserRetry' : 'browserEnable')),
+        status === 'connecting' && h('span', { role: 'status' }, t('browserConnecting')),
+        (status === 'failed' || clipFailed) && h('span', { role: 'status', className: 'phoebe-dock__error' },
+          t(status === 'failed' ? 'browserFailed' : 'browserClipFailed')))
     }
 
     function Dock(props) {
@@ -670,6 +661,7 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale', 'remote', 'remote.credentials', 'configForms'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'phoebe-voice: settings translations')
+        ctx.effect(() => disableBrowserAudio, 'phoebe-voice: close browser audio')
         const credentials = {
           async describe() {
             const result = await ctx.remote.credentials.describe([KEY])
@@ -684,6 +676,10 @@ window.__ModuleLoader__.load({
           const quickForm = {
             subscribe: form.subscribe.bind(form), getSnapshot: form.getSnapshot.bind(form), mutate: form.mutate.bind(form),
           }
+          ctx.effect(() => form.subscribe(() => {
+            const state = form.getSnapshot()
+            if (state.status === 'ready' && !browserAllowed(state)) disableBrowserAudio()
+          }), 'phoebe-voice: observe browser playback settings')
           return ctx.slots.register({
             name: 'conversation.composer.dock', id: 'phoebe-voice.dock', order: 50, locale: NS,
             inject: () => ({ quickForm }),
