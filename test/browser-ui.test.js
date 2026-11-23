@@ -242,7 +242,11 @@ test('fragmented and batched NDJSON handles stop, replacements, and recoverable 
   await turn()
   assert.equal(h.sources[1].stopped, true)
   assert.equal(label(h.dock()), 'browserDisable')
-  assert.equal(h.dock().children[2].children[0], 'browserClipFailed')
+  const [icon, tip] = h.dock().children[2].children
+  assert.equal(icon.props.tabIndex, 0)
+  assert.equal(icon.props['aria-describedby'], tip.props.id)
+  assert.equal(tip.props.role, 'tooltip')
+  assert.equal(tip.children[0], 'browserClipFailed')
   await click(h.dock())
   await pending
 })
@@ -264,7 +268,7 @@ test('overlong incomplete lines and oversized audio fail before decode; fetch/de
     if (failure === 'disconnect') h.streams.at(-1).close()
     await pending
     assert.equal(label(h.dock()), 'browserRetry', failure)
-    assert.equal(h.dock().children[2].children[0], 'browserFailed', failure)
+    assert.equal(h.dock().children[2].children[1].children[0], 'browserFailed', failure)
     assert.equal(h.contexts.at(-1).state, 'closed', failure)
     assert.equal(h.fetches.at(-1).options.signal.aborted, true, failure)
     assert.equal(h.decodes.length, ['decode', 'disconnect'].includes(failure) ? 1 : 0)

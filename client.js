@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
       playbackTarget: '播报位置', host: '运行 DSH 的设备', browser: '当前浏览器',
       playbackTargetHint: '开启一次后，此标签页会播放配置范围内所有主会话的新提醒，包括未打开的会话。',
       browserEnable: '开启浏览器播放', browserDisable: '停止浏览器播放', browserRetry: '重试浏览器播放',
-      browserConnecting: '正在连接浏览器音频…', browserFailed: '浏览器音频不可用，请重试。',
+      browserWarning: '浏览器播放错误', browserConnecting: '正在连接浏览器音频…', browserFailed: '浏览器音频不可用，请重试。',
       browserClipFailed: '无法播放这条播报。浏览器仍在等待下一条播报。',
       offHint: '不发送任何播报请求。',
       noticeHint: '只播放本地固定提醒，不发起语音合成请求。默认菲比音色已内置；自定义音色需先生成。',
@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
       playbackTarget: 'Playback destination', host: 'Device running DSH', browser: 'Browser',
       playbackTargetHint: 'Enable once per tab to hear new announcements from all in-scope main conversations, even when not open.',
       browserEnable: 'Enable browser audio', browserDisable: 'Stop browser audio', browserRetry: 'Retry browser audio',
-      browserConnecting: 'Connecting to browser audio…', browserFailed: 'Browser audio is unavailable. Please try again.',
+      browserWarning: 'Browser audio error', browserConnecting: 'Connecting to browser audio…', browserFailed: 'Browser audio is unavailable. Please try again.',
       browserClipFailed: 'This announcement could not play. Still listening for the next one.',
       offHint: 'No synthesis requests are sent.',
       noticeHint: 'Plays only local fixed reminders without a synthesis request. Phoebe is bundled; prepare presets for custom voices.',
@@ -359,6 +359,18 @@ window.__ModuleLoader__.load({
         color:var(--dsw-alias-label-primary-foreground, HighlightText); }
       .phoebe-summary-dialog__button:focus-visible { outline:2px solid var(--dsw-alias-brand-primary, Highlight); outline-offset:2px; }
       .phoebe-dock__error { font-size:11px; color:var(--dsw-alias-state-error-primary); }
+      .phoebe-audio-warning { position:relative; display:inline-flex; align-items:center; }
+      .phoebe-audio-warning__icon { display:grid; place-items:center; inline-size:22px; block-size:22px;
+        border-radius:50%; color:var(--dsw-alias-state-error-primary, #e5484d); cursor:help; }
+      .phoebe-audio-warning__icon:focus-visible { outline:2px solid currentColor; outline-offset:1px; }
+      .phoebe-audio-warning__tip { position:absolute; z-index:10; inset-inline-end:0; bottom:100%;
+        inline-size:max-content; max-inline-size:min(250px, 75vw); box-sizing:border-box; padding:6px 9px;
+        border:1px solid var(--dsw-alias-border-l2); border-radius:8px; box-shadow:0 4px 14px rgb(0 0 0 / .24);
+        background:var(--dsw-alias-bg-layer-2, Canvas); color:var(--dsw-alias-label-primary, CanvasText);
+        font-size:12px; line-height:1.4; white-space:normal; overflow-wrap:anywhere;
+        opacity:0; pointer-events:none; }
+      .phoebe-audio-warning:hover .phoebe-audio-warning__tip,
+      .phoebe-audio-warning:focus-within .phoebe-audio-warning__tip { opacity:1; pointer-events:auto; }
       .phoebe-balance__button { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         border:1px solid var(--dsw-alias-border-l1); border-radius:999px; padding:0 7px; background:var(--dsw-alias-bg-layer-1);
         color:var(--dsw-alias-label-secondary); cursor:pointer; font:inherit; font-size:11px; line-height:20px; font-variant-numeric:tabular-nums; }
@@ -626,6 +638,7 @@ window.__ModuleLoader__.load({
     }
 
     function BrowserAudio({ t, quickForm, useRemoteAccess }) {
+      const warningId = useId()
       const config = useSyncExternalStore(quickForm.subscribe, quickForm.getSnapshot)
       const canRead = useRemoteAccess('settings/describe')
       const { status, clipFailed } = useSyncExternalStore(browserStore.subscribe, browserStore.getSnapshot)
@@ -636,8 +649,15 @@ window.__ModuleLoader__.load({
         h('button', { type: 'button', className: 'phoebe-balance__button', onClick: toggleBrowserAudio, 'aria-pressed': enabled },
           t(enabled ? 'browserDisable' : status === 'failed' ? 'browserRetry' : 'browserEnable')),
         status === 'connecting' && h('span', { role: 'status' }, t('browserConnecting')),
-        (status === 'failed' || clipFailed) && h('span', { role: 'status', className: 'phoebe-dock__error' },
-          t(status === 'failed' ? 'browserFailed' : 'browserClipFailed')))
+        (status === 'failed' || clipFailed) && h('span', { className: 'phoebe-audio-warning' },
+          h('span', { className: 'phoebe-audio-warning__icon', tabIndex: 0, role: 'img',
+            'aria-label': t('browserWarning'), 'aria-describedby': warningId },
+            h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+              h('circle', { cx: 8, cy: 8, r: 6.25, stroke: 'currentColor', strokeWidth: 1.5 }),
+              h('path', { d: 'M8 4.8v3.6', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
+              h('circle', { cx: 8, cy: 11, r: .85, fill: 'currentColor' }))),
+          h('span', { id: warningId, role: 'tooltip', className: 'phoebe-audio-warning__tip' },
+            t(status === 'failed' ? 'browserFailed' : 'browserClipFailed'))))
     }
 
     function Dock(props) {
