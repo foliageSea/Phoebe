@@ -1,6 +1,6 @@
 {
   "name": "@foliagesea/dsh-phoebe-voice",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "description": "Phoebe-style Fish Audio announcements for DSH questions and final replies.",
   "private": true,
   "type": "module",
