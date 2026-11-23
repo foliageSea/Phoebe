@@ -4,6 +4,7 @@ import z from '@deepseek-ai/schemastery'
 import { registerBalanceRoute } from './host/balance.js'
 import { createBrowserAudio, registerBrowserAudioRoute } from './host/browser-audio.js'
 import { readBrowserAudio, synthesizeBrowserAudio } from './host/browser-render.js'
+import { bundledPreset } from './host/bundled-presets.js'
 import { ALL_WORKSPACES, installHooks, isWithinWorkspace } from './host/hooks.js'
 import { isFullPath } from './host/paths.js'
 import { createPlayback, findPlayer, PHOEBE_VOICE, PlaybackError, playFish, playLocal } from './host/playback.js'
@@ -61,29 +62,38 @@ export function apply(ctx, config) {
   }
 
   async function render(job, signal, player) {
-    let { text } = job
-    let key
-    if (job.summary) {
-      key = (await resolveKey())?.trim()
-      signal.throwIfAborted()
-      if (!job.isCurrent()) return
-      if (key) text = await createSummary(ctx.get?.('llm'), job.summary, signal) ?? text
-      signal.throwIfAborted()
-      if (!job.isCurrent()) return
-    }
-    if (fixedScripts.has(text)) {
-      const path = await presets.find(text)
+    const playPreset = async (text, fallback = false) => {
+      const path = await presets.find(text) ?? (fallback ? await bundledPreset(text, PHOEBE_VOICE) : undefined)
       signal.throwIfAborted()
       if (!job.isCurrent()) return
       if (!path) throw new PlaybackError('missing-preset')
       return player ? playLocal({ player, path, signal }) : readBrowserAudio(path, signal)
     }
-    if (!job.summary) key = (await resolveKey())?.trim()
-    signal.throwIfAborted()
-    if (!key) throw new PlaybackError('missing-key')
-    if (!job.isCurrent()) return
-    const request = { key, text, model: config.fishModel, referenceId: getVoice(), signal }
-    return player ? playFish({ ...request, player }) : synthesizeBrowserAudio(request)
+    let { text } = job
+    if (!job.summary && fixedScripts.has(text)) return playPreset(text)
+
+    // Leave time in the outer playback deadline for the offline fallback.
+    const dynamicSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+    try {
+      const key = (await resolveKey())?.trim()
+      dynamicSignal.throwIfAborted()
+      if (!job.isCurrent()) return
+      if (key && job.summary) text = await createSummary(ctx.get?.('llm'), job.summary, dynamicSignal) ?? text
+      dynamicSignal.throwIfAborted()
+      if (!job.isCurrent()) return
+      if (!fixedScripts.has(text)) {
+        if (!key) throw new PlaybackError('missing-key')
+        const request = { key, text, model: config.fishModel, referenceId: getVoice(), signal: dynamicSignal }
+        return await (player ? playFish({ ...request, player }) : synthesizeBrowserAudio(request))
+      }
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!job.isCurrent()) return
+      warn(dynamicSignal.aborted ? new PlaybackError('timeout') : error)
+      // One offline attempt only; never retry synthesis or enqueue another alert.
+      return playPreset(NOTICES[job.kind], true)
+    }
+    return playPreset(text)
   }
   const local = createPlayback(async (job, signal) => {
     const player = findPlayer(config.playerPath)

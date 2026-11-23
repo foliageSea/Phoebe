@@ -136,14 +136,26 @@ test('browser audio reads local MP3 without a player and bounds streamed Fish re
   await assert.rejects(readFish(Buffer.alloc(MAX_AUDIO_BYTES + 1)), { code: 'audio-limit' })
 })
 
-test('browser fixed notices work through live hooks with no ffplay or Fish key', async () => {
+for (const scenario of ['fixed', 'http-503', 'summary-http-503', 'missing-key', 'canceled']) test('browser live hooks: ' + scenario, { timeout: 2000 }, async (t) => {
+  const dynamic = scenario !== 'fixed'
+  let outbound = 0
+  let finish
+  t.mock.method(globalThis, 'fetch', async () => {
+    outbound++
+    if (scenario === 'canceled') await new Promise(resolve => { finish = resolve })
+    return new Response(null, { status: 503 })
+  })
+  const logs = t.mock.method(console, 'warn', () => {})
   const events = new Map()
   const routes = new Map()
   const disposers = []
-  const session = { id: 'main', header: {}, firstLiveSeq: 1 }
+  const session = { id: 'main', header: {}, firstLiveSeq: 1, requestHeader: () => ({ config: { provider: 'test', model: 'test' } }) }
   const connection = { fetch: { register(route) { routes.set(route.path, route) } } }
-  const credentials = { resolve() { assert.fail('fixed Phoebe clip must not read a key') } }
-  const parsed = Config['~standard'].validate({ mode: 'notice', playbackTarget: 'browser', playerPath: fileURLToPath(new URL('../no-ffplay', import.meta.url)) }).value
+  const credentials = { resolve() {
+    assert.ok(dynamic, 'fixed Phoebe clip must not read a key')
+    if (scenario !== 'missing-key') return { value: 'fixture-key' }
+  } }
+  const parsed = Config['~standard'].validate({ mode: scenario === 'summary-http-503' ? 'summary' : dynamic ? 'brief' : 'notice', playbackTarget: 'browser', reference_id: dynamic ? 'test-custom-voice' : undefined, playerPath: fileURLToPath(new URL('../no-ffplay', import.meta.url)) }).value
   let target = 'browser'
   const config = { ...parsed, playbackTarget: { get: () => target } }
   apply({
@@ -161,7 +173,18 @@ test('browser fixed notices work through live hooks with no ffplay or Fish key',
     event('step/start', { turn: 1, step: 1 })
     event('assistant/message', { turn: 1, step: 1, message: { content: [{ type: 'text', text: '已完成。' }] } }, 'append')
     event('turn/end', { turn: 1, reason: { kind: 'completed' } })
-    assert.deepEqual(await read(reader), { type: 'audio', audio: await readFile(new URL('../audio/final.mp3', import.meta.url), 'base64') })
+    if (scenario === 'canceled') {
+      await nextTick()
+      assert.equal(outbound, 1)
+      event('turn/start', { turn: 2 })
+      finish()
+      await nextTick()
+      assert.equal(logs.mock.callCount(), 0)
+    } else {
+      assert.deepEqual(await read(reader), { type: 'audio', audio: await readFile(new URL('../audio/final.mp3', import.meta.url), 'base64') })
+      assert.equal(outbound, scenario.endsWith('http-503') ? 1 : 0)
+      assert.equal(logs.mock.callCount(), dynamic ? 1 : 0)
+    }
     target = 'host'
     events.get('settings/document-updated')()
     assert.equal((await reader.read()).done, true)
