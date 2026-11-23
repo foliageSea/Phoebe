@@ -119,11 +119,17 @@ function harness() {
 const label = dock => dock.children[0].children[0]
 const click = dock => dock.children[0].props.onClick()
 
-test('playback destination defaults to host and saves with mode in one revision-checked transaction', async () => {
+test('playback destination and Fish model save with mode in one revision-checked transaction', async () => {
   const h = harness()
   h.setConfig({ playbackTarget: undefined })
   const fields = () => h.config().children[1].children
   const destination = () => fields()[2].children[1]
+  const fishModel = () => fields()[3].children[1]
+  assert.equal(fishModel().props.value, 's2.1-pro-free')
+  assert.equal(fishModel().children[0].map(item => item.props.value).join(','), 's2.1-pro-free,s2.1-pro')
+  fishModel().props.onChange(input('invalid-model'))
+  assert.equal(fishModel().props.value, 's2.1-pro-free')
+  fishModel().props.onChange(input('s2.1-pro'))
   assert.equal(destination().props.value, 'host')
   assert.equal(destination().children[0].map(item => item.props.value).join(','), 'host,browser')
   for (const locale of ['en', 'zh']) for (const label of ['host', 'browser', 'playbackTarget', 'browserEnable', 'browserRetry']) {
@@ -135,12 +141,14 @@ test('playback destination defaults to host and saves with mode in one revision-
   await h.config().props.onSubmit({ preventDefault() {} })
   assert.deepEqual(h.writes, [{ revision: 8, ops: [
     { op: 'set', path: ['mode'], value: 'notice' }, { op: 'set', path: ['playbackTarget'], value: 'browser' },
+    { op: 'set', path: ['fishModel'], value: 's2.1-pro' },
   ] }])
   assert.equal(destination().props.value, 'browser')
-  destination().props.onChange(input('host'))
+  assert.equal(fishModel().props.value, 's2.1-pro')
+  fishModel().props.onChange(input('s2.1-pro-free'))
   h.setConfig({ reference_id: 'other' })
   await h.config().props.onSubmit({ preventDefault() {} })
-  assert.equal(h.writes.length, 1, 'a stale destination draft cannot overwrite the latest revision')
+  assert.equal(h.writes.length, 1, 'a stale model draft cannot overwrite the latest revision')
 })
 
 test('dock resumes on click, subscribes to all sessions, and stops on request', async () => {

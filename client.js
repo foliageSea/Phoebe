@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
     const NS = 'phoebeVoice.config'
     const MODES = ['off', 'notice', 'brief', 'summary']
     const TARGETS = ['host', 'browser']
+    const FISH_MODELS = ['s2.1-pro-free', 's2.1-pro']
     const MAX_AUDIO_LENGTH = 1_333_336
     const MAX_AUDIO_LINE_BYTES = MAX_AUDIO_LENGTH + 64
     const PRESETS_URL = 'api/phoebe-voice.presets'
@@ -20,6 +21,8 @@ window.__ModuleLoader__.load({
       keyInvalid: '请输入有效的单行 API Key。', keySaved: '密钥已保存，尚未向 Fish Audio 验证。',
       keySaveFailed: '未能确认密钥已保存。请检查连接和权限，再重新输入并保存。',
       saveKey: '保存密钥', saving: '保存中…',
+      fishModel: 'Fish Audio 合成模型', fishModelHint: '用于摘句和 AI 简述的语音合成。付费版会消耗 Fish Audio 额度；不更改音色、简述用的 DSH 模型或生成预设时的模型选项。',
+      fishFree: '免费', fishPaid: '付费',
       playback: '语音播报', voiceLabel: '音色 ID（reference_id）',
       voiceHint: '填写 Fish Audio 音色 ID，不是音色页面链接。修改后从下次播报开始使用。',
       restore: '使用默认菲比音色', invalidVoice: '请输入 1–128 位英文字母、数字、连字符或下划线。',
@@ -59,6 +62,8 @@ window.__ModuleLoader__.load({
       keyInvalid: 'Enter a valid, single-line API key.', keySaved: 'Key saved. It has not been validated with Fish Audio.',
       keySaveFailed: 'Could not confirm the key was saved. Check the connection and permissions before entering it again.',
       saveKey: 'Save API key', saving: 'Saving…',
+      fishModel: 'Fish Audio synthesis model', fishModelHint: 'Used to synthesize excerpts and AI summaries. The paid model uses Fish Audio credits. This does not change the voice, the DSH summary model, or the preset generation options.',
+      fishFree: 'Free', fishPaid: 'Paid',
       playback: 'Voice announcements', voiceLabel: 'Voice ID (reference_id)',
       voiceHint: 'Enter a Fish Audio voice ID, not a voice page URL. Changes apply to the next announcement.',
       restore: 'Use default Phoebe voice', invalidVoice: 'Use 1–128 letters, digits, hyphens, or underscores.',
@@ -206,12 +211,14 @@ window.__ModuleLoader__.load({
       const mode = draft?.mode ?? current?.mode ?? 'off'
       const currentTarget = current?.playbackTarget === 'browser' ? 'browser' : 'host'
       const playbackTarget = draft?.playbackTarget ?? currentTarget
+      const currentModel = FISH_MODELS.includes(current?.fishModel) ? current.fishModel : FISH_MODELS[0]
+      const fishModel = draft?.fishModel ?? currentModel
       const voiceId = draft?.voiceId ?? current?.reference_id ?? DEFAULT_VOICE
       const invalid = !ID_PATTERN.test(voiceId.trim())
       const conflict = draft !== null && draft.revision !== state?.revision
       const canWrite = useRemoteAccess('settings/mutate')
       const writable = Boolean(ready && state.writable && canWrite)
-      const changed = Boolean(draft && (mode !== current?.mode || voiceId.trim() !== current?.reference_id || playbackTarget !== currentTarget))
+      const changed = Boolean(draft && (mode !== current?.mode || voiceId.trim() !== current?.reference_id || playbackTarget !== currentTarget || fishModel !== currentModel))
 
       function edit(patch) {
         setDraft(before => ({ revision: state.revision, ...before, ...patch }))
@@ -225,6 +232,7 @@ window.__ModuleLoader__.load({
         if (voiceId.trim() !== current.reference_id) ops.push({ op: 'set', path: ['reference_id'], value: voiceId.trim() })
         if (mode !== current.mode) ops.push({ op: 'set', path: ['mode'], value: mode })
         if (playbackTarget !== currentTarget) ops.push({ op: 'set', path: ['playbackTarget'], value: playbackTarget })
+        if (fishModel !== currentModel) ops.push({ op: 'set', path: ['fishModel'], value: fishModel })
         busy.current = true
         setSaving(true)
         setFeedback(null)
@@ -274,6 +282,16 @@ window.__ModuleLoader__.load({
               },
             }, TARGETS.map(value => h('option', { key: value, value }, t(value)))),
             h('p', { id: `${id}-target-hint`, className: 'phoebe-config__text' }, t('playbackTargetHint'))),
+          h('div', { className: 'phoebe-config__field' },
+            h('label', { htmlFor: `${id}-fish-model` }, t('fishModel')),
+            h('select', {
+              id: `${id}-fish-model`, className: 'phoebe-config__input', value: fishModel, disabled,
+              'aria-describedby': `${id}-fish-model-hint`, onChange: (event) => {
+                const value = event.currentTarget.value
+                if (FISH_MODELS.includes(value)) edit({ fishModel: value })
+              },
+            }, FISH_MODELS.map((value, i) => h('option', { key: value, value }, value + ' · ' + t(i ? 'fishPaid' : 'fishFree')))),
+            h('p', { id: `${id}-fish-model-hint`, className: 'phoebe-config__text' }, t('fishModelHint'))),
           !writable && status(t, 'readOnly'),
           conflict && status(t, 'conflict', 'error'),
           h('div', { className: 'phoebe-config__actions' },

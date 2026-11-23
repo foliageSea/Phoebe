@@ -136,12 +136,15 @@ test('browser audio reads local MP3 without a player and bounds streamed Fish re
   await assert.rejects(readFish(Buffer.alloc(MAX_AUDIO_BYTES + 1)), { code: 'audio-limit' })
 })
 
-for (const scenario of ['fixed', 'http-503', 'summary-http-503', 'missing-key', 'canceled']) test('browser live hooks: ' + scenario, { timeout: 2000 }, async (t) => {
+for (const scenario of ['fixed', 'http-503', 'summary-http-503', 'missing-key', 'canceled', 'model-switch']) test('browser live hooks: ' + scenario, { timeout: 2000 }, async (t) => {
   const dynamic = scenario !== 'fixed'
   let outbound = 0
   let finish
-  t.mock.method(globalThis, 'fetch', async () => {
+  const models = []
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
     outbound++
+    models.push(options.headers.model)
+    if (scenario === 'model-switch') return new Response('audio', { headers: { 'content-type': 'audio/mpeg' } })
     if (scenario === 'canceled') await new Promise(resolve => { finish = resolve })
     return new Response(null, { status: 503 })
   })
@@ -157,7 +160,8 @@ for (const scenario of ['fixed', 'http-503', 'summary-http-503', 'missing-key', 
   } }
   const parsed = Config['~standard'].validate({ mode: scenario === 'summary-http-503' ? 'summary' : dynamic ? 'brief' : 'notice', playbackTarget: 'browser', reference_id: dynamic ? 'test-custom-voice' : undefined, playerPath: fileURLToPath(new URL('../no-ffplay', import.meta.url)) }).value
   let target = 'browser'
-  const config = { ...parsed, playbackTarget: { get: () => target } }
+  let fishModel = parsed.fishModel.get()
+  const config = { ...parsed, playbackTarget: { get: () => target }, fishModel: { get: () => fishModel } }
   apply({
     connection, credentials, agents: new Map([[session.id, { session }]]), workingDirectory: { get: () => process.cwd() },
     on(name, callback) { events.set(name, callback) },
@@ -180,6 +184,16 @@ for (const scenario of ['fixed', 'http-503', 'summary-http-503', 'missing-key', 
       finish()
       await nextTick()
       assert.equal(logs.mock.callCount(), 0)
+    } else if (scenario === 'model-switch') {
+      assert.equal((await read(reader)).type, 'audio')
+      fishModel = 's2.1-pro'
+      event('turn/start', { turn: 2 })
+      assert.equal((await read(reader)).type, 'stop')
+      event('step/start', { turn: 2, step: 1 })
+      event('assistant/message', { turn: 2, step: 1, message: { content: [{ type: 'text', text: '已完成。' }] } }, 'append')
+      event('turn/end', { turn: 2, reason: { kind: 'completed' } })
+      assert.equal((await read(reader)).type, 'audio')
+      assert.deepEqual(models, ['s2.1-pro-free', 's2.1-pro'])
     } else {
       assert.deepEqual(await read(reader), { type: 'audio', audio: await readFile(new URL('../audio/final.mp3', import.meta.url), 'base64') })
       assert.equal(outbound, scenario.endsWith('http-503') ? 1 : 0)

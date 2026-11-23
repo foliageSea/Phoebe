@@ -61,7 +61,7 @@
 | `playbackTarget` | `host`（默认，从 DSH Host 播放）或 `browser`（在启用播放的浏览器标签页中播报）；两者不同时播放。 |
 | `workspaceRoot` | 默认 `/` 表示所有 DSH 工作区（Windows 上包含所有盘符）。也可设为已有目录的完整路径（例如 `D:\Projects`），只播报该目录及其子目录中的主会话。更新插件不会覆盖已有的范围设置。 |
 | `reference_id` | Fish Audio 音色 ID；默认 `8e80c3dcdf894213a10b48e9b08ad8c6`（[菲比](https://fish.audio/m/8e80c3dcdf894213a10b48e9b08ad8c6/)）。在页面保存后，下次播报使用。 |
-| `fishModel` | Fish 发音引擎，默认 `s2.1-pro-free`；可选付费的 `s2.1-pro`。与参考音色 ID 是不同设置。 |
+| `fishModel` | 在 **语音播报 → Fish Audio 合成模型** 中选择：默认 `s2.1-pro-free`（免费），也可选 `s2.1-pro`（消耗 Fish Audio 额度）。保存后，下次合成使用新模型；不改变音色、生成预设时的模型选项或用于 AI 简述的 DSH 模型。 |
 | `playerPath` | 可选，仅用于 Host 播放。`ffplay` 或 `ffplay.exe` 的完整路径。未指定时，Windows 按 Host 的 `PATH` 顺序检查绝对目录中的 `ffplay.exe`；其他平台检查 `/opt/homebrew/bin/ffplay`、`/usr/local/bin/ffplay`、`/usr/bin/ffplay`；Linux 找不到时，再按 Host 的 `PATH` 顺序检查绝对目录。 |
 
 `brief` 在本机从问题正文或最终答复中摘取原句，最多 120 字符，不调用额外的 LLM。它会跳过常见代码、命令和疑似敏感内容，但**无法保证识别所有隐私或凭据**；敏感会话用 `notice` 或 `off`。问题刚回答或取消、会话切走工作目录、关闭插件时，相关播放会停止。问题提醒可打断结果播报。Fish 不可用时不会阻止 Agent 正常工作；Host 日志中 `[phoebe-voice]` 后的简短错误码可用于诊断：`missing-key`、`missing-player`、`http-401`、`http-402`、`http-429` 等。实时摘句或简述不会写盘。动态播报失败时，只尝试一次对应的本地固定提醒：优先使用当前音色已有的预设，缺失时使用内置菲比录音。不会重试 Fish Audio、自动生成预设或更改播报模式；已取消的播报不会回退。默认三条菲比音频随包附带；自定义音色预设存放在 DSH Home 的 `cache/phoebe-voice`，按音色、模型和台词区分。已成功生成的片段不会重复请求。

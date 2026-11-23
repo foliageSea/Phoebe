@@ -19,7 +19,7 @@ export const Config = z.object({
   playbackTarget: z.union(['host', 'browser']).default('host').volatile(),
   reference_id: z.string().pattern(/^[A-Za-z0-9_-]{1,128}$/).default(PHOEBE_VOICE).volatile(),
   workspaceRoot: z.string().default(ALL_WORKSPACES),
-  fishModel: z.union(['s2.1-pro-free', 's2.1-pro']).default('s2.1-pro-free'),
+  fishModel: z.union(['s2.1-pro-free', 's2.1-pro']).default('s2.1-pro-free').volatile(),
   playerPath: z.string(),
 })
 
@@ -36,8 +36,9 @@ export function apply(ctx, config) {
 
   const resolveKey = async () => (await ctx.credentials.resolve('FISH_API_KEY'))?.value
   const getVoice = () => config.reference_id.get()
+  const getModel = () => config.fishModel.get()
   const presets = createPresets({
-    resolveKey, getVoice, model: config.fishModel,
+    resolveKey, getVoice, getModel,
     directory: join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'cache', 'phoebe-voice'),
   })
   const fixedScripts = new Set(Object.values(NOTICES))
@@ -83,7 +84,7 @@ export function apply(ctx, config) {
       if (!job.isCurrent()) return
       if (!fixedScripts.has(text)) {
         if (!key) throw new PlaybackError('missing-key')
-        const request = { key, text, model: config.fishModel, referenceId: getVoice(), signal: dynamicSignal }
+        const request = { key, text, model: getModel(), referenceId: getVoice(), signal: dynamicSignal }
         return await (player ? playFish({ ...request, player }) : synthesizeBrowserAudio(request))
       }
     } catch (error) {

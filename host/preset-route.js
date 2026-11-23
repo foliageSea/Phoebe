@@ -7,20 +7,25 @@ const PAID = 's2.1-pro'
 
 // Paid synthesis is opt-in for the three presets, independently of the excerpt model.
 export function createPresets(options) {
-  const configured = createStore(options)
-  const alternateModel = options.model === PAID ? FREE : PAID
-  const alternate = createStore({ ...options, model: alternateModel })
+  const stores = new Map([FREE, PAID].map(model => [model, createStore({ ...options, model })]))
+  const preferred = () => (options.getModel?.() ?? options.model) === PAID ? PAID : FREE
+  const orderedStores = () => {
+    const model = preferred()
+    return [stores.get(model), stores.get(model === PAID ? FREE : PAID)]
+  }
   const check = async (voice) => {
+    const [first, second] = orderedStores()
     const bundled = await Promise.all(Object.values(NOTICES).map(text => bundledPreset(text, voice)))
     if (bundled.every(Boolean)) return { status: 'ready' }
-    const result = await configured.status(voice)
+    const result = await first.status(voice)
     return result.status === 'ready' ? result
-      : (await alternate.status(voice)).status === 'ready' ? { status: 'ready' } : result
+      : (await second.status(voice)).status === 'ready' ? { status: 'ready' } : result
   }
   return {
     async find(text) {
       const voice = options.getVoice()
-      return await bundledPreset(text, voice) ?? await configured.find(text, voice) ?? await alternate.find(text, voice)
+      const [first, second] = orderedStores()
+      return await bundledPreset(text, voice) ?? await first.find(text, voice) ?? await second.find(text, voice)
     },
     async status() { return check(options.getVoice()) },
     async prepare(model) {
@@ -28,7 +33,7 @@ export function createPresets(options) {
       // Don't spend more quota when an intact set already exists in either model.
       const status = await check(voice)
       if (status.status === 'ready') return status
-      return (model === options.model ? configured : alternate).prepare(voice)
+      return stores.get(model).prepare(voice)
     },
   }
 }
