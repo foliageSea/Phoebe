@@ -17,6 +17,7 @@ const ERROR = packet({ type: 'error' })
 // No replay buffer: snapshots only include tabs listening when a live event arrived.
 export function createBrowserAudio(render, warn, { maxListeners = 16, heartbeatMs = 10_000 } = {}) {
   const subscribers = new Set()
+  let nextId = 0
   const queue = createPlayback(async (job, audioSignal) => {
     let audio
     try {
@@ -29,8 +30,11 @@ export function createBrowserAudio(render, warn, { maxListeners = 16, heartbeatM
     }
     audioSignal.throwIfAborted()
     if (!audio || !job.isCurrent()) return
-    const chunk = packet({ type: 'audio', audio: audio.toString('base64') })
-    for (const tab of job.tabs) if (subscribers.has(tab)) tab.play(chunk, job)
+    const waitMs = Math.min(20_000, job.expiresAt - Date.now())
+    if (waitMs <= 0) return
+    const id = ++nextId
+    const chunk = packet({ type: 'audio', id, waitMs, audio: audio.toString('base64') })
+    for (const tab of job.tabs) if (subscribers.has(tab)) tab.deliver(chunk, job, id, waitMs)
   }, warn)
 
   function open(signal) {
@@ -39,40 +43,57 @@ export function createBrowserAudio(render, warn, { maxListeners = 16, heartbeatM
     let tab
     const stream = new ReadableStream({
       start(controller) {
-        let playing, timer, closed = false
-        const clear = () => {
-          playing?.signal?.removeEventListener('abort', stopOnAbort)
-          playing = undefined
+        let timer, closed = false
+        const delivered = new Map()
+        const forget = (id) => {
+          const clip = delivered.get(id)
+          if (!clip) return false
+          delivered.delete(id)
+          clearTimeout(clip.timeout)
+          clip.signal?.removeEventListener('abort', clip.cancel)
+          return true
         }
+        const clear = () => { for (const id of delivered.keys()) forget(id) }
         const send = (chunk) => {
           if (closed) return false
-          // Drop a slow connection instead of queuing stale audio indefinitely.
-          if (controller.desiredSize <= 0) { tab.close(); return false }
+          // A live subscriber can absorb a burst, but cannot buffer audio indefinitely.
+          if (controller.desiredSize <= 0) { tab.close('backpressure'); return false }
           controller.enqueue(chunk)
           return true
         }
-        const stopOnAbort = () => tab.stop()
+        const cancelClip = (id) => {
+          if (forget(id)) send(packet({ type: 'cancel', id }))
+        }
         tab = {
           send,
-          play(chunk, job) {
-            clear()
-            if (job.signal?.aborted || !send(chunk)) return
-            playing = { owner: job.owner, kind: job.kind, signal: job.signal }
-            job.signal?.addEventListener('abort', stopOnAbort, { once: true })
+          deliver(chunk, { owner, kind, signal }, id, waitMs) {
+            if (signal?.aborted) return
+            if (delivered.size >= 32) cancelClip(delivered.keys().next().value)
+            if (!send(chunk)) return
+            const cancel = () => cancelClip(id)
+            const timeout = setTimeout(() => forget(id), waitMs + 30_000)
+            timeout.unref()
+            delivered.set(id, { owner, kind, signal, cancel, timeout })
+            signal?.addEventListener('abort', cancel, { once: true })
           },
-          stop(owner, onlyKind) {
-            if (!playing || (owner && playing.owner !== owner) || (onlyKind && playing.kind !== onlyKind)) return
+          cancelOwner(owner, onlyKind) {
+            for (const [id, clip] of delivered) {
+              if (clip.owner === owner && (!onlyKind || clip.kind === onlyKind)) cancelClip(id)
+            }
+          },
+          stop() {
             clear()
             send(STOP)
           },
-          close(cancelled = false) {
+          close(reason) {
             if (closed) return
             closed = true
             clear()
             clearInterval(timer)
             signal.removeEventListener('abort', disconnect)
             subscribers.delete(tab)
-            if (!cancelled) controller.close()
+            if (reason === 'backpressure') controller.error(new Error('Slow browser audio stream'))
+            else if (reason !== 'canceled') controller.close()
             if (!subscribers.size) queue.cancelAll()
           },
         }
@@ -83,8 +104,8 @@ export function createBrowserAudio(render, warn, { maxListeners = 16, heartbeatM
         timer = setInterval(() => send(PING), heartbeatMs)
         timer.unref?.()
       },
-      cancel() { tab.close(true) },
-    }, { highWaterMark: 2 })
+      cancel() { tab.close('canceled') },
+    }, { highWaterMark: 16 })
     return new Response(stream, { headers: HEADERS })
   }
 
@@ -93,12 +114,11 @@ export function createBrowserAudio(render, warn, { maxListeners = 16, heartbeatM
     enqueue(job) {
       if (!subscribers.size || job.signal?.aborted) return
       const tabs = [...subscribers]
-      if (job.kind === 'ask') for (const tab of tabs) tab.stop(undefined, 'final')
       queue.enqueue({ ...job, tabs, isCurrent: () => tabs.some(tab => subscribers.has(tab)) && job.isCurrent() })
     },
-    cancelOwner(owner) {
-      queue.cancelOwner(owner)
-      for (const tab of subscribers) tab.stop(owner)
+    cancelOwner(owner, onlyKind) {
+      queue.cancelOwner(owner, onlyKind)
+      for (const tab of subscribers) tab.cancelOwner(owner, onlyKind)
     },
     cancelAll() {
       queue.cancelAll()
@@ -117,7 +137,7 @@ export function registerBrowserAudioRoute(ctx, browser, enabled) {
     fetch(request) {
       const query = new URL(request.url).searchParams
       const reject = (status) => new Response(null, { status, headers: HEADERS })
-      if (request.headers.get('x-phoebe-browser-audio') !== '1') return reject(400)
+      if (request.headers.get('x-phoebe-browser-audio') !== '2') return reject(400)
       // Do not silently upgrade older clients that requested only one session.
       if (query.get('scope') !== 'all' || query.has('session')) return reject(400)
       if (!enabled()) return reject(409)

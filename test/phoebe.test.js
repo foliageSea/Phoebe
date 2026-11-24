@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { test } from 'node:test'
 import { apply, Config } from '../index.js'
+import { createBrowserAudio } from '../host/browser-audio.js'
 import { installHooks, isWithinWorkspace } from '../host/hooks.js'
 import { createPlayback, PHOEBE_VOICE, playFish } from '../host/playback.js'
 import { finalSpeech, MAX_SPOKEN, questionSpeech } from '../host/speech.js'
@@ -18,7 +19,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function fakeHost({ cwd = process.cwd(), origin, mode = 'brief', workspaceRoot = process.cwd() } = {}) {
+function fakeHost({ cwd = process.cwd(), origin, mode = 'brief', workspaceRoot = process.cwd(), output } = {}) {
   const hooks = new Map()
   const queued = []
   const canceled = []
@@ -31,7 +32,10 @@ function fakeHost({ cwd = process.cwd(), origin, mode = 'brief', workspaceRoot =
     agents,
     workingDirectory: { get: (session) => session.cwd },
   }
-  const playback = { enqueue: (job) => queued.push(job), cancelOwner: (owner) => canceled.push(owner) }
+  const playback = {
+    enqueue(job) { queued.push(job); output?.enqueue(job) },
+    cancelOwner(...args) { canceled.push(args); output?.cancelOwner(...args) },
+  }
   installHooks(host, { mode, workspaceRoot }, playback, (error) => warnings.push(error))
   let seq = 10
   const publish = (type, data, extra = {}) => hooks.get('session/event').fn(session, { type, data, seq: seq++, ...extra })
@@ -222,32 +226,116 @@ test('working directory, delegated Agent and live identity restrict questions an
   h.session.cwd = sibling
   h.publish('working-directory/change', { cwd: sibling })
   assert.equal(h.queued[0].isCurrent(), false)
-  assert.equal(h.canceled.at(-1), h.session)
+  assert.deepEqual(h.canceled.at(-1), [h.session])
   h.session.cwd = process.cwd()
   h.agents.set('main', { ...h.agent })
   assert.equal(h.queued[0].isCurrent(), false)
 })
 
-test('playback serializes jobs, replaces pending entries and preempts final with an ask', async () => {
-  const started = deferred()
+test('completed replies are played across subsequent turns, including an aborted turn', async () => {
+  const spoken = []
+  const output = createPlayback(async job => spoken.push(job.text), assert.fail)
+  const h = fakeHost({ output })
+  h.start(1); h.message(1, 1, [text('第一轮完成。')]); h.end(1)
+  h.start(2); h.end(2, 'aborted')
+  h.start(3); h.message(3, 1, [text('第三轮完成。')]); h.end(3)
+  assert.deepEqual(h.canceled, Array.from({ length: 4 }, () => [h.session, 'ask']))
+  assert.equal(h.queued.length, 2)
+  for (const job of h.queued) {
+    assert.equal(job.kind, 'final')
+    assert.equal(job.isCurrent(), true)
+  }
+  await output.settled()
+  assert.deepEqual(spoken, ['第一轮完成。', '第三轮完成。'].map(text => finalSpeech(text, 'brief')))
+})
+
+test('browser stream keeps two completed replies from consecutive turns', { timeout: 2_000 }, async (t) => {
+  const output = createBrowserAudio(async job => Buffer.from(job.text), assert.fail)
+  t.after(() => output.close())
+  const h = fakeHost({ output })
+  const reader = output.open(new AbortController().signal).body.getReader()
+  const next = async () => JSON.parse(new TextDecoder().decode((await reader.read()).value))
+  assert.deepEqual(await next(), { type: 'ready' })
+  const replies = ['第一轮完成。', '第二轮完成。']
+  for (const [i, reply] of replies.entries()) {
+    const turn = i + 1
+    h.start(turn); h.message(turn, 1, [text(reply)]); h.end(turn)
+  }
+  for (const reply of replies) {
+    const event = await next()
+    assert.equal(event.type, 'audio')
+    assert.equal(Buffer.from(event.audio, 'base64').toString(), finalSpeech(reply, 'brief'))
+  }
+})
+
+test('playback preserves FIFO across kinds and skips only the canceled question', async () => {
+  const release = deferred()
   const events = []
+  const owner = {}
+  const other = {}
+  const answered = new AbortController()
   const playback = createPlayback(async (job, signal) => {
     events.push(job.text)
     if (job.text === 'active') {
-      started.resolve()
-      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+      await release.promise
+      assert.equal(signal.aborted, false)
     }
-  }, (error) => assert.fail(error))
-  const enqueue = (kind, text) => playback.enqueue({ kind, text, isCurrent: () => true })
-  enqueue('final', 'active')
+  }, assert.fail)
+  const enqueue = (kind, text, session, signal) => playback.enqueue({ kind, text, owner: session, signal, isCurrent: () => true })
+  enqueue('final', 'active', owner)
   assert.deepEqual(events, [])
-  await started.promise
-  enqueue('final', 'obsolete final')
-  enqueue('final', 'latest final')
-  enqueue('ask', 'obsolete ask')
-  enqueue('ask', 'latest ask')
+  await Promise.resolve()
+  enqueue('ask', 'old question', owner)
+  enqueue('final', 'reply', owner)
+  enqueue('ask', 'question', other)
+  enqueue('ask', 'answered', other, answered.signal)
+  enqueue('final', 'another reply', other)
+  answered.abort()
+  playback.cancelOwner(owner, 'ask')
+  assert.deepEqual(events, ['active'])
+  release.resolve()
   await playback.settled()
-  assert.deepEqual(events, ['active', 'latest ask', 'latest final'])
+  assert.deepEqual(events, ['active', 'reply', 'question', 'another reply'])
+})
+
+test('canceling an active question immediately advances to the next reminder', async () => {
+  const started = deferred()
+  const events = []
+  const answered = new AbortController()
+  const playback = createPlayback(async (job, signal) => {
+    events.push(job.text)
+    if (job.kind === 'ask') {
+      started.resolve()
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+      assert.equal(signal.aborted, true)
+    }
+  }, assert.fail)
+  const owner = {}
+  playback.enqueue({ kind: 'ask', owner, text: 'question', signal: answered.signal, isCurrent: () => true })
+  await started.promise
+  playback.enqueue({ kind: 'final', owner, text: 'reply', isCurrent: () => true })
+  answered.abort()
+  await playback.settled()
+  assert.deepEqual(events, ['question', 'reply'])
+})
+
+test('full queue preserves older entries, makes room for stale work and continues after errors', async () => {
+  const events = [], warnings = []
+  let now = 0
+  const playback = createPlayback(async ({ text }) => {
+    events.push(text)
+    if (text === 1) throw new Error('playback failed')
+  }, error => warnings.push(error.message), () => now)
+  const enqueue = (kind, text, isCurrent = () => true) => playback.enqueue({ kind, text, isCurrent })
+  enqueue('ask', 0)
+  for (let i = 1; i < 8; i++) enqueue('final', i, () => i !== 2 || now === 0)
+  enqueue('final', 'overflow')
+  now = 12_000
+  enqueue('final', 'new 1')
+  enqueue('final', 'new 2')
+  await playback.settled()
+  assert.deepEqual(events, [1, 3, 4, 5, 6, 7, 'new 1', 'new 2'])
+  assert.deepEqual(warnings, ['playback failed'])
 })
 
 test('stale, canceled, disposed or out-of-scope work never reaches Fish', async () => {

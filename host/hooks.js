@@ -75,10 +75,12 @@ export function installHooks(ctx, config, playback, warn) {
   ctx.on('session/event', (session, event) => safe(() => {
     switch (event.type) {
       case 'turn/start': {
-        playback.cancelOwner(session)
+        if (event.seq < session.firstLiveSeq) return
+        // A new turn invalidates old questions, not completed replies waiting to play.
+        playback.cancelOwner(session, 'ask')
         turns.delete(session)
         const agent = exactAgent(session)
-        if (event.seq >= session.firstLiveSeq && eligible(agent, session)) {
+        if (eligible(agent, session)) {
           turns.set(session, { agent, turn: event.data.turn, step: undefined, text: '' })
         }
         break
@@ -113,7 +115,7 @@ export function installHooks(ctx, config, playback, warn) {
         if (state?.turn !== event.data.turn) return
         turns.delete(session)
         if (event.data.reason.kind !== 'completed') {
-          playback.cancelOwner(session)
+          playback.cancelOwner(session, 'ask')
           return
         }
         if (!state.text || !eligible(state.agent, session)) return

@@ -6,8 +6,12 @@ window.__ModuleLoader__.load({
     const MODES = ['off', 'notice', 'brief', 'summary']
     const TARGETS = ['host', 'browser']
     const FISH_MODELS = ['s2.1-pro-free', 's2.1-pro']
-    const MAX_AUDIO_LENGTH = 1_333_336
-    const MAX_AUDIO_LINE_BYTES = MAX_AUDIO_LENGTH + 64
+    const MAX_AUDIO_BYTES = 1_000_000
+    const MAX_AUDIO_LENGTH = Math.ceil(MAX_AUDIO_BYTES / 3) * 4
+    const MAX_AUDIO_LINE_BYTES = MAX_AUDIO_LENGTH + 96 // NDJSON envelope, including v2 metadata
+    const MAX_BROWSER_PENDING = 8
+    const MAX_BROWSER_WAIT_MS = 20_000
+    const MAX_BROWSER_CLIP_MS = 30_000
     const PRESETS_URL = 'api/phoebe-voice.presets'
     const KEY = 'FISH_API_KEY'
     const DEFAULT_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
@@ -513,16 +517,26 @@ window.__ModuleLoader__.load({
         failed && h('span', { className: 'phoebe-dock__error', role: 'status' }, t('saveFailed')))
     }
 
-    function stopBrowserClip(run) {
-      run.sequence++
-      const source = run.source
-      run.source = null
-      if (source) {
-        source.onended = null
+    function releaseBrowserClip(run, stop = true) {
+      const clip = run.active
+      if (!clip) return
+      run.active = null
+      clearTimeout(clip.timer)
+      if (clip.source) {
+        clip.source.onended = null
         // A browser may already have torn down the source or its context.
-        try { source.stop() } catch {}
-        try { source.disconnect() } catch {}
+        if (stop) { try { clip.source.stop() } catch {} }
+        try { clip.source.disconnect() } catch {}
       }
+    }
+
+    function stopBrowserQueue(run) {
+      run.pending.length = 0
+      releaseBrowserClip(run)
+    }
+
+    function validBrowserAudioId(id) {
+      return Number.isSafeInteger(id) && id > 0
     }
 
     // One explicit gesture and one owner-only stream per tab, independent of the Dock lifecycle.
@@ -545,7 +559,7 @@ window.__ModuleLoader__.load({
       browserRun = undefined
       if (run) {
         run.controller.abort()
-        stopBrowserClip(run)
+        stopBrowserQueue(run)
         if (run.context && run.context.state !== 'closed') {
           try { void run.context.close()?.catch(() => {}) } catch {}
         }
@@ -553,33 +567,64 @@ window.__ModuleLoader__.load({
       if (browserState.status !== status || browserState.clipFailed) publishBrowserAudio(status)
     }
 
-    async function playBrowserClip(run, sequence, audio, onError) {
-      let source
+    function drainBrowserQueue(run) {
+      if (run.active || run.controller.signal.aborted) return
+      while (run.pending.length) {
+        const { id, audio, expiresAt } = run.pending.shift()
+        const now = performance.now()
+        if (expiresAt <= now) continue
+        const clip = { id, deadline: now + MAX_BROWSER_CLIP_MS, source: null, timer: null }
+        run.active = clip
+        clip.timer = setTimeout(() => finishBrowserClip(run, clip, { failed: true }), MAX_BROWSER_CLIP_MS)
+        // Keep reading control packets while decode is in flight.
+        void playBrowserClip(run, clip, audio)
+        break
+      }
+    }
+
+    function finishBrowserClip(run, clip, { failed = false, ended = false } = {}) {
+      if (run.active !== clip) return
+      releaseBrowserClip(run, !ended)
+      if (failed) run.onClipStatus(true)
+      drainBrowserQueue(run)
+    }
+
+    async function playBrowserClip(run, clip, audio) {
       try {
         const binary = atob(audio)
         const bytes = new Uint8Array(binary.length)
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
         const buffer = await run.context.decodeAudioData(bytes.buffer)
-        if (run.controller.signal.aborted || sequence !== run.sequence) return
-        source = run.context.createBufferSource()
+        // Web Audio cannot abort a decode. Ignore late completions for discarded clips.
+        if (run.active !== clip) return
+        if (performance.now() >= clip.deadline) {
+          finishBrowserClip(run, clip, { failed: true })
+          return
+        }
+        const source = clip.source = run.context.createBufferSource()
         source.buffer = buffer
         source.connect(run.context.destination)
-        source.onended = () => {
-          if (run.source === source) run.source = null
-          source.disconnect()
-        }
+        source.onended = () => finishBrowserClip(run, clip, { ended: true })
         source.start()
-        run.source = source
+        run.onClipStatus(false)
       } catch {
-        source?.disconnect()
-        if (!run.controller.signal.aborted && sequence === run.sequence) onError()
+        finishBrowserClip(run, clip, { failed: true })
       }
     }
 
-    async function readBrowserAudio(run, onReady, onClipStatus, onError) {
+    function validBrowserAudio(audio) {
+      if (typeof audio !== 'string' || !audio.length || audio.length > MAX_AUDIO_LENGTH || /[^A-Za-z0-9+/=]/.test(audio)) return false
+      const padding = audio.indexOf('=')
+      const encodedLength = padding < 0 ? audio.length : padding
+      if (encodedLength % 4 === 1 || Math.floor(encodedLength * 3 / 4) > MAX_AUDIO_BYTES) return false
+      return padding < 0 || (audio.length % 4 === 0 && (padding === audio.length - 1 ||
+        (padding === audio.length - 2 && audio.endsWith('=='))))
+    }
+
+    async function readBrowserAudio(run, onReady) {
       const { signal } = run.controller
       const response = await fetch('api/phoebe-voice.audio?scope=all', {
-        headers: { 'x-phoebe-browser-audio': '1' }, signal, cache: 'no-store', redirect: 'error',
+        headers: { 'x-phoebe-browser-audio': '2' }, signal, cache: 'no-store', redirect: 'error',
       })
       if (signal.aborted) return
       if (!response.ok || !response.body) throw new Error('Browser audio unavailable')
@@ -602,23 +647,33 @@ window.__ModuleLoader__.load({
               continue
             }
             if (!length) continue
+            const receivedAt = performance.now()
             const event = JSON.parse(decoder.decode(line.subarray(0, length)))
             length = 0
             switch (event?.type) {
               case 'ready': onReady(); break
               case 'ping': break
-              case 'stop': stopBrowserClip(run); break
-              case 'error': onClipStatus(true); break
+              case 'stop': stopBrowserQueue(run); break
+              case 'error': run.onClipStatus(true); break
+              case 'cancel': {
+                const { id } = event
+                if (!validBrowserAudioId(id)) throw new Error('Invalid browser audio cancel')
+                run.pending = run.pending.filter(clip => clip.id !== id)
+                if (run.active?.id === id) finishBrowserClip(run, run.active)
+                break
+              }
               case 'audio': {
-                const { audio } = event
-                if (typeof audio !== 'string' || !audio.length || audio.length > MAX_AUDIO_LENGTH || /[^A-Za-z0-9+/=]/.test(audio)) {
+                const { id, waitMs, audio } = event
+                if (!validBrowserAudioId(id) || !Number.isInteger(waitMs) || waitMs < 0 || waitMs > MAX_BROWSER_WAIT_MS || !validBrowserAudio(audio)) {
                   throw new Error('Invalid browser audio')
                 }
-                stopBrowserClip(run)
-                onClipStatus(false)
-                // Do not block the reader on decoding: stop or replacement can
-                // arrive before decodeAudioData resolves.
-                void playBrowserClip(run, run.sequence, audio, onError)
+                const expiresAt = receivedAt + waitMs
+                const now = performance.now()
+                run.pending = run.pending.filter(clip => clip.expiresAt > now)
+                if (expiresAt > now && run.pending.length < MAX_BROWSER_PENDING) {
+                  run.pending.push({ id, audio, expiresAt })
+                  drainBrowserQueue(run)
+                }
                 break
               }
               default: throw new Error('Invalid browser audio event')
@@ -632,7 +687,10 @@ window.__ModuleLoader__.load({
 
     async function toggleBrowserAudio() {
       if (browserRun) { disableBrowserAudio(); return }
-      const run = { controller: new AbortController(), context: null, sequence: 0, source: null }
+      const run = {
+        controller: new AbortController(), context: null, active: null, pending: [],
+        onClipStatus: clipFailed => publishBrowserAudio(browserState.status, clipFailed),
+      }
       browserRun = run
       publishBrowserAudio('connecting')
       function fail() {
@@ -645,8 +703,7 @@ window.__ModuleLoader__.load({
         // Resume synchronously inside the click, before a fetch or any await.
         await run.context.resume()
         if (browserRun !== run) return
-        await readBrowserAudio(run, () => publishBrowserAudio('active'),
-          clipFailed => publishBrowserAudio(browserState.status, clipFailed), fail)
+        await readBrowserAudio(run, () => publishBrowserAudio('active'))
       } catch { fail() }
     }
 

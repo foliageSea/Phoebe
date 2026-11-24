@@ -119,9 +119,9 @@ export function apply(ctx, config) {
       const queue = output === 'browser' ? browser : local
       queue.enqueue({ ...job, isCurrent: () => getTarget() === output && job.isCurrent() })
     },
-    cancelOwner(owner) {
-      local.cancelOwner(owner)
-      browser.cancelOwner(owner)
+    cancelOwner(owner, onlyKind) {
+      local.cancelOwner(owner, onlyKind)
+      browser.cancelOwner(owner, onlyKind)
     },
   }
   ctx.effect(() => () => { browser.close(); return local.dispose() }, 'phoebe-voice: stop playback')

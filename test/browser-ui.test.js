@@ -10,7 +10,9 @@ const input = value => ({ currentTarget: { value } })
 function harness() {
   let plugin, hooks, index, translations, sessionId = 's/1?😀', canDescribe = true
   let state = { status: 'ready', value: { mode: 'brief', reference_id: 'custom', playbackTarget: 'browser' }, revision: 7, writable: true }
-  let failFetch = false, resumeGate
+  let failFetch = false, failStart = false, resumeGate
+  let now = 0, nextTimer = 0
+  const timers = new Map()
   const subscribers = new Set()
   const slots = new Map()
   const writes = [], fetches = [], contexts = [], streams = [], decodes = [], sources = []
@@ -43,7 +45,13 @@ function harness() {
     createBufferSource() {
       const source = {
         connect: destination => assert.equal(destination, this.destination),
-        start() { this.started = true },
+        start() {
+          if (failStart) throw new Error('test source start failure')
+          assert.equal(sources.some(source => source !== this && source.started && !source.ended && !source.stopped), false,
+            'browser sources never overlap')
+          this.started = true
+        },
+        end() { this.ended = true; this.onended?.() },
         stop() { this.stopped = true },
         disconnect() { this.disconnected = true },
       }
@@ -53,7 +61,13 @@ function harness() {
   }
   runInNewContext(client, {
     window: { AudioContext, __ModuleLoader__: { load({ factory }) { plugin = factory(() => React) } } },
-    AbortController, TextDecoder, atob,
+    AbortController, TextDecoder, atob, performance: { now: () => now },
+    setTimeout(callback, ms) {
+      const id = ++nextTimer
+      timers.set(id, { callback, at: now + ms })
+      return id
+    },
+    clearTimeout: id => timers.delete(id),
     async fetch(url, options) {
       fetches.push({ url, options })
       if (failFetch) return { ok: false }
@@ -92,7 +106,16 @@ function harness() {
   }
   const configHooks = []
   return {
-    writes, fetches, contexts, decodes, sources, translations, streams,
+    writes, fetches, contexts, decodes, sources, translations, streams, timers,
+    advance(ms, runTimers = true) {
+      now += ms
+      if (runTimers) for (const [id, timer] of timers) {
+        if (timer.at > now) continue
+        timers.delete(id)
+        timer.callback()
+      }
+    },
+    failStart: value => { failStart = value },
     setSession: value => { sessionId = value },
     setConfig: value => {
       state = { ...state, revision: state.revision + 1, value: { ...state.value, ...value } }
@@ -106,6 +129,7 @@ function harness() {
       return unlock
     },
     send: text => streams.at(-1).enqueue(new TextEncoder().encode(text)),
+    events: (...events) => streams.at(-1).enqueue(new TextEncoder().encode(events.map(event => JSON.stringify(event) + '\n').join(''))),
     dock() {
       return render(slot('conversation.composer.dock', { sessionId }).children[3])
     },
@@ -118,6 +142,11 @@ function harness() {
 
 const label = dock => dock.children[0].children[0]
 const click = dock => dock.children[0].props.onClick()
+const clip = (id, waitMs = 20_000, audio = btoa(String.fromCharCode(id))) => ({ type: 'audio', id, waitMs, audio })
+const cancel = id => ({ type: 'cancel', id })
+const stop = { type: 'stop' }
+const ready = { type: 'ready' }
+const warning = h => h.dock().children[2]?.children?.[1].children[0]
 
 test('playback destination and Fish model save with mode in one revision-checked transaction', async () => {
   const h = harness()
@@ -164,7 +193,7 @@ test('dock resumes on click, subscribes to all sessions, and stops on request', 
   assert.equal(request.url, 'api/phoebe-voice.audio?scope=all')
   assert.equal(request.options.cache, 'no-store')
   assert.equal(request.options.redirect, 'error')
-  assert.equal(request.options.headers['x-phoebe-browser-audio'], '1')
+  assert.equal(request.options.headers['x-phoebe-browser-audio'], '2')
   assert.equal(label(h.dock()), 'browserDisable')
   await click(h.dock())
   await pending
@@ -182,14 +211,16 @@ test('switching sessions or leaving chat does not stop or recreate the stream', 
   assert.equal(label(h.dock()), 'browserDisable')
   unlock()
   await turn()
-  h.send('{"type":"ready"}\n{"type":"audio","audio":"AA=="}\n')
+  h.events(ready, clip(1))
   await turn()
   h.decodes[0].resolve({})
   await turn()
   assert.equal(h.sources[0].started, true)
   // No Dock render is needed to receive a clip while another page is open.
-  h.send('{"type":"audio","audio":"AQ=="}\n')
+  h.events(clip(2))
   await turn()
+  assert.equal(h.decodes.length, 1)
+  h.sources[0].end()
   h.decodes[1].resolve({})
   await turn()
   assert.equal(h.sources[1].started, true)
@@ -221,64 +252,212 @@ test('turning off playback or losing permission revokes the tab unlock', async (
   }
 })
 
-test('fragmented and batched NDJSON handles stop, replacements, and recoverable clip errors', async () => {
+test('fragmented and batched NDJSON handles cancellation and stop without accepting stale decodes', async () => {
   const h = harness()
   const pending = click(h.dock())
   await turn()
   h.send('{"type":"rea')
   await turn()
   assert.equal(h.dock().children[1].children[0], 'browserConnecting')
-  h.send('dy"}\n{"type":"ping"}\n{"type":"audio","audio":"AQID"}\n{"type":"stop"}\n')
+  h.send('dy"}\n')
+  h.events({ type: 'ping' }, clip(1), clip(2), clip(3), cancel(2), cancel(999), cancel(1))
   await turn()
-  assert.deepEqual(h.decodes[0].bytes, [1, 2, 3])
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[1], [3]])
   h.decodes[0].resolve({})
   await turn()
-  assert.equal(h.sources.length, 0, 'stop invalidates pending decode')
-  h.send('{"type":"audio","audio":"Ag=="}\n{"type":"audio","audio":"Aw=="}\n')
-  await turn()
-  h.decodes[2].resolve({})
+  assert.equal(h.sources.length, 0, 'targeted cancellation invalidates the active decode only')
   h.decodes[1].resolve({})
   await turn()
-  assert.equal(h.sources.length, 1, 'only the newest pending decode plays')
-  assert.equal(h.sources[0].started, true)
-  h.send('{"type":"audio","audio":"BA=="}\n')
+  h.events(clip(4), clip(5), cancel(3))
   await turn()
-  assert.equal(h.sources[0].stopped, true, 'replacement stops the active source immediately')
+  assert.equal(h.sources[0].stopped, true)
+  assert.equal(h.sources[0].disconnected, true)
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[1], [3], [4]])
+  h.events(stop, clip(6))
+  await turn()
+  h.decodes[2].reject(new Error('stale decode must not affect the next clip'))
   h.decodes[3].resolve({})
   await turn()
-  h.send('{"type":"stop"}\n{"type":"error"}\n')
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[1], [3], [4], [6]], 'stop clears active and queued clips')
+  assert.equal(h.sources[1].started, true)
+  assert.equal(warning(h), undefined)
+  h.events(clip(7), stop, { type: 'error' })
   await turn()
   assert.equal(h.sources[1].stopped, true)
+  assert.equal(h.decodes.length, 4)
+  assert.equal(h.timers.size, 0)
   assert.equal(label(h.dock()), 'browserDisable')
   const [icon, tip] = h.dock().children[2].children
   assert.equal(icon.props.tabIndex, 0)
   assert.equal(icon.props['aria-describedby'], tip.props.id)
   assert.equal(tip.props.role, 'tooltip')
-  assert.equal(tip.children[0], 'browserClipFailed')
+  assert.equal(warning(h), 'browserClipFailed')
   await click(h.dock())
   await pending
 })
 
-test('overlong incomplete lines and oversized audio fail before decode; fetch/decode failures can be retried', async () => {
+test('browser playback is FIFO with one active decode or source and up to eight pending clips', async () => {
   const h = harness()
-  for (const failure of ['fetch', 'line', 'audio', 'decode', 'disconnect']) {
+  const pending = click(h.dock())
+  await turn()
+  h.events(ready, ...Array.from({ length: 10 }, (_, i) => clip(i + 1)))
+  await turn()
+  assert.equal(h.decodes.length, 1, 'queued clips cannot start decode while another is active')
+  for (let i = 0; i < 9; i++) {
+    assert.equal(h.decodes.length, i + 1)
+    assert.deepEqual(h.decodes[i].bytes, [i + 1])
+    h.decodes[i].resolve({})
+    await turn()
+    assert.equal(h.sources[i].started, true)
+    assert.equal(h.decodes.length, i + 1, 'playback retains its active slot')
+    h.sources[i].end()
+    assert.equal(h.sources[i].disconnected, true)
+  }
+  assert.equal(h.decodes.length, 9, 'the newest arrival was dropped without evicting existing clips')
+  assert.equal(h.timers.size, 0)
+  await click(h.dock())
+  await pending
+})
+
+test('browser queue skips clips whose wait budget expired relative to receipt', async () => {
+  const h = harness()
+  const pending = click(h.dock())
+  await turn()
+  h.events(ready, clip(1, 0), clip(2), clip(3, 10), ...Array.from({ length: 7 }, (_, i) => clip(i + 4)))
+  await turn()
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[2]])
+  h.advance(10)
+  h.events(clip(11), clip(12, 1))
+  await turn()
+  h.events(cancel(4), clip(13, 1), clip(14))
+  await turn()
+  h.advance(1)
+  for (const [index, id] of [2, 5, 6, 7, 8, 9, 10, 11].entries()) {
+    assert.deepEqual(h.decodes[index].bytes, [id])
+    h.decodes[index].resolve({})
+    await turn()
+    h.sources[index].end()
+  }
+  assert.equal(h.decodes.length, 8, 'expired entries neither consume pending capacity nor start playback')
+  await click(h.dock())
+  await pending
+})
+
+test('the 30 second watchdog includes decode time and recovers from expired and hung clips', async () => {
+  const h = harness()
+  const pending = click(h.dock())
+  await turn()
+  h.events(ready, clip(1), clip(2))
+  await turn()
+  h.advance(29_000)
+  h.events(clip(3))
+  await turn()
+  h.advance(999)
+  assert.equal(h.decodes.length, 1)
+  h.advance(1)
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[1], [3]])
+  assert.equal(warning(h), 'browserClipFailed')
+  h.decodes[0].resolve({})
+  await turn()
+  assert.equal(h.sources.length, 0)
+  h.advance(29_000)
+  h.events(clip(4))
+  await turn()
+  h.decodes[1].resolve({})
+  await turn()
+  assert.equal(h.sources[0].started, true)
+  assert.equal(warning(h), undefined)
+  const staleEnd = h.sources[0].onended
+  h.advance(999)
+  assert.equal(h.sources[0].stopped, undefined)
+  h.advance(1)
+  assert.equal(h.sources[0].stopped, true, 'the timer is not restarted when decoding finishes')
+  assert.equal(h.sources[0].disconnected, true)
+  assert.equal(warning(h), 'browserClipFailed')
+  staleEnd()
+  assert.deepEqual(h.decodes.map(decode => decode.bytes), [[1], [3], [4]])
+  h.decodes[2].resolve({})
+  await turn()
+  assert.equal(h.sources[1].started, true)
+  await click(h.dock())
+  await pending
+  assert.equal(h.timers.size, 0)
+})
+
+test('a decode resolving after its deadline cannot play even if the watchdog task has not run', async () => {
+  const h = harness()
+  const pending = click(h.dock())
+  await turn()
+  h.events(ready, clip(1))
+  await turn()
+  h.advance(30_000, false)
+  h.decodes[0].resolve({})
+  await turn()
+  assert.equal(warning(h), 'browserClipFailed')
+  assert.equal(h.sources.length, 0)
+  assert.equal(h.timers.size, 0)
+  await click(h.dock())
+  await pending
+})
+
+test('maximum-size audio with v2 metadata is accepted; decode and playback failures recover within the same stream', async () => {
+  const h = harness()
+  const pending = click(h.dock())
+  await turn()
+  h.events(ready, clip(Number.MAX_SAFE_INTEGER, 20_000, 'a'.repeat(1_333_334) + '=='), clip(2), clip(3))
+  await turn()
+  assert.equal(h.decodes[0].bytes.length, 1_000_000)
+  h.decodes[0].reject(new Error('test decode failure'))
+  await turn()
+  assert.equal(warning(h), 'browserClipFailed')
+  assert.deepEqual(h.decodes[1].bytes, [2])
+  h.failStart(true)
+  h.decodes[1].resolve({})
+  await turn()
+  assert.equal(h.sources[0].disconnected, true)
+  assert.equal(warning(h), 'browserClipFailed')
+  h.failStart(false)
+  h.decodes[2].resolve({})
+  await turn()
+  assert.equal(h.sources[1].started, true)
+  assert.equal(warning(h), undefined)
+  assert.equal(label(h.dock()), 'browserDisable')
+  assert.equal(h.fetches[0].options.signal.aborted, false)
+  await click(h.dock())
+  await pending
+})
+
+test('malformed packets fail before decode and stream failures can be retried', async () => {
+  const h = harness()
+  const failures = [
+    ['fetch', () => {}],
+    ['line too long', () => h.send('a'.repeat(1_333_433))],
+    ['oversized encoded audio', () => h.events(clip(1, 20_000, 'a'.repeat(1_333_337)))],
+    ['oversized decoded audio without padding', () => h.events(clip(1, 20_000, 'a'.repeat(1_333_336)))],
+    ['oversized decoded audio with single padding', () => h.events(clip(1, 20_000, 'a'.repeat(1_333_335) + '='))],
+    ['invalid audio alphabet', () => h.events(clip(1, 1, 'abcd!'))],
+    ['invalid audio padding', () => h.events(clip(1, 1, 'a==='))],
+    ['missing metadata', () => h.events({ type: 'audio', audio: 'AQ==' })],
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1'].map(id => [
+      `bad audio id ${id}`, () => h.events(clip(id, 1, 'AQ==')),
+    ]),
+    ...[-1, 20_001, 1.5, '1', undefined].map(waitMs => [
+      `bad waitMs ${waitMs}`, () => h.events({ ...clip(1), waitMs }),
+    ]),
+    ['invalid cancel id', () => h.events(cancel(0))],
+    ['disconnect', () => h.streams.at(-1).close()],
+  ]
+  for (const [failure, trigger] of failures) {
     h.failFetch(failure === 'fetch')
     const pending = click(h.dock())
     await turn()
-    if (failure === 'line') h.send('a'.repeat(1_333_401))
-    if (failure === 'audio') h.send(JSON.stringify({ type: 'audio', audio: 'a'.repeat(1_333_337) }) + '\n')
-    if (failure === 'decode') {
-      h.send(JSON.stringify({ type: 'audio', audio: 'a'.repeat(1_333_334) + '==' }) + '\n')
-      await turn()
-      assert.equal(h.decodes.at(-1).bytes.length, 1_000_000)
-      h.decodes.at(-1).reject(new Error('test decode failure'))
-    }
-    if (failure === 'disconnect') h.streams.at(-1).close()
+    trigger()
     await pending
     assert.equal(label(h.dock()), 'browserRetry', failure)
-    assert.equal(h.dock().children[2].children[1].children[0], 'browserFailed', failure)
+    assert.equal(warning(h), 'browserFailed', failure)
     assert.equal(h.contexts.at(-1).state, 'closed', failure)
     assert.equal(h.fetches.at(-1).options.signal.aborted, true, failure)
-    assert.equal(h.decodes.length, ['decode', 'disconnect'].includes(failure) ? 1 : 0)
+    assert.equal(h.decodes.length, 0, failure)
+    assert.equal(h.timers.size, 0, failure)
   }
 })

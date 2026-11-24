@@ -9,6 +9,7 @@ const FISH_TTS = 'https://api.fish.audio/v1/tts'
 export const PHOEBE_VOICE = '8e80c3dcdf894213a10b48e9b08ad8c6'
 export const MAX_AUDIO_BYTES = 1_000_000
 const MAX_WAIT_MS = { ask: 12_000, final: 20_000 }
+const MAX_PENDING_JOBS = 8
 const PLAY_TIMEOUT_MS = 30_000
 const PLAYER_CANDIDATES = ['/opt/homebrew/bin/ffplay', '/usr/local/bin/ffplay', '/usr/bin/ffplay']
 
@@ -53,25 +54,25 @@ export function findPlayer(explicitPath, { platform = process.platform, env = pr
   }
 }
 
-// Priority mailbox: one active job, one pending job of each kind. No playback or
-// network work runs on the Cordis callback stack, not even player/credential discovery.
+// Bounded FIFO. No playback or network work runs on the Cordis callback stack,
+// not even player/credential discovery.
 export function createPlayback(play, report, now = Date.now) {
-  const pending = new Map()
+  const pending = new Set()
   let active
   let worker
   let disposed = false
 
   const detach = (job) => job.signal?.removeEventListener('abort', job.cancel)
-  function discard(kind, job) {
-    if (pending.get(kind) === job) pending.delete(kind)
+  function discard(job) {
+    pending.delete(job)
     detach(job)
     job.controller.abort()
   }
 
   async function drain() {
     while (!disposed && pending.size) {
-      const job = pending.get('ask') ?? pending.get('final')
-      pending.delete(job.kind)
+      const job = pending.values().next().value
+      pending.delete(job)
       const timeout = AbortSignal.timeout(PLAY_TIMEOUT_MS)
       const signal = AbortSignal.any([job.controller.signal, timeout])
       active = job
@@ -87,8 +88,8 @@ export function createPlayback(play, report, now = Date.now) {
   }
 
   function cancelAll() {
-    for (const [kind, job] of pending) discard(kind, job)
-    active?.controller.abort()
+    for (const job of pending) discard(job)
+    if (active) discard(active)
   }
 
   function schedule() {
@@ -102,20 +103,30 @@ export function createPlayback(play, report, now = Date.now) {
   return {
     enqueue(spec) {
       if (disposed || spec.signal?.aborted) return
-      const previous = pending.get(spec.kind)
-      if (previous) discard(spec.kind, previous)
-      const job = {
-        ...spec, controller: new AbortController(), expiresAt: now() + MAX_WAIT_MS[spec.kind],
+      const time = now()
+      if (pending.size >= MAX_PENDING_JOBS) {
+        for (const job of pending) {
+          try {
+            if (time >= job.expiresAt || !job.isCurrent()) discard(job)
+          } catch (error) {
+            discard(job)
+            report(error)
+          }
+        }
+        if (pending.size >= MAX_PENDING_JOBS) return
       }
-      job.cancel = () => discard(job.kind, job)
+      const job = {
+        ...spec, controller: new AbortController(), expiresAt: time + MAX_WAIT_MS[spec.kind],
+      }
+      job.cancel = () => discard(job)
       spec.signal?.addEventListener('abort', job.cancel, { once: true })
-      pending.set(job.kind, job)
-      if (spec.kind === 'ask' && active?.kind === 'final') active.controller.abort()
+      pending.add(job)
       schedule()
     },
-    cancelOwner(owner) {
-      for (const [kind, job] of pending) if (job.owner === owner) discard(kind, job)
-      if (active?.owner === owner) active.controller.abort()
+    cancelOwner(owner, onlyKind) {
+      const matches = job => job.owner === owner && (!onlyKind || job.kind === onlyKind)
+      for (const job of pending) if (matches(job)) discard(job)
+      if (active && matches(active)) discard(active)
     },
     cancelAll,
     async dispose() {
